@@ -1,0 +1,12 @@
+{
+    "name": "iiitr-leave-system",
+    "version": "1.0.0",
+    "description": "IIIT Raichur Leave Management System",
+    "main": "server.js",
+    "scripts": {
+        "start": "node server.js"
+    },
+    "dependencies": {
+        "express": "^4.18.0"
+    }
+}

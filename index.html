@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Leave system IIITR</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Gravitas+One&display=swap"
+        rel="stylesheet">
+</head>
+
+<body>
+    <div class="login">
+        <h1>User Login</h1>
+
+        <form id="loginForm" onsubmit="return handleLogin(event)">
+            <input type="text" id="Username" name="Username" placeholder="Username" required><br>
+            <input type="password" id="Password" name="Password" placeholder="Password" required><br>
+        </form>
+        <p id="loginError" style="color:#ff4444; font-size:13px; margin-top:8px; display:none;"></p>
+        <div class="btn-wrapper">
+            <button class="btn btn-filled" onclick="handleLogin(event)">Login</button>
+        </div>
+        <div class="credentials-hint" style="margin-top:18px; font-size:12px; color:#aaa; text-align:left; line-height:1.8;">
+            <p style="color:#5da6c5; font-weight:600; margin-bottom:4px;">Demo Credentials:</p>
+            <p><b>Student:</b> student / student123</p>
+            <p><b>Warden:</b> warden / warden123</p>
+            <p><b>FA:</b> fa / fa123</p>
+            <p><b>Mess:</b> mess / mess123</p>
+            <p><b>Admin:</b> admin / admin123</p>
+        </div>
+        <div class="forget-password"><a href="#">Forget Password</a></div>
+    </div>
+
+    <script>
+        const users = [
+            { username: "student", password: "student123", role: "student", redirect: "student.html" },
+            { username: "warden",  password: "warden123",  role: "warden",  redirect: "warden_dashboard.html" },
+            { username: "fa",      password: "fa123",      role: "fa",      redirect: "fa_dashboard.html" },
+            { username: "mess",    password: "mess123",    role: "mess",    redirect: "mess_dashboard.html" },
+            { username: "admin",   password: "admin123",   role: "admin",   redirect: "admin.html" }
+        ];
+
+        function handleLogin(e) {
+            e.preventDefault();
+            const username = document.getElementById("Username").value.trim().toLowerCase();
+            const password = document.getElementById("Password").value;
+            const errEl = document.getElementById("loginError");
+
+            const user = users.find(u => u.username === username && u.password === password);
+
+            if (user) {
+                sessionStorage.setItem("loggedInUser", JSON.stringify({ username: user.username, role: user.role }));
+                window.location.href = user.redirect;
+            } else {
+                errEl.textContent = "Invalid username or password.";
+                errEl.style.display = "block";
+            }
+            return false;
+        }
+    </script>
+
+</body>
+
+</html>

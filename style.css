@@ -1,0 +1,139 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: Arial, sans-serif;
+}
+
+body {
+    height: 100vh;
+    background-image: url("Images/bg2.jpg");
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background: radial-gradient(circle at center,
+            transparent 40%,
+            rgba(0, 0, 0, 0.6) 100%);
+    pointer-events: none;
+}
+
+
+.login {
+    color: white;
+    height: auto;
+    width: 25vw;
+    text-align: center;
+    background: rgba(0, 25, 45, 0.55);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+
+    border-radius: 18px;
+    padding: 35px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    box-shadow:
+        0 20px 40px rgba(0, 0, 0, 0.6),
+        inset 0 0 20px rgba(255, 255, 255, 0.05);
+
+}
+
+
+.login h1 {
+    font-family: 'archivo black', sans-serif;
+    font-weight: 400;
+    margin: 0;
+    font-style: normal;
+    font-size: 2.2rem;
+    text-decoration: underline;
+}
+
+.login form {
+    display: flex;
+    flex-direction: column;
+    margin-top: 30px;
+}
+
+.login input {
+    width: 100%;
+    padding: 12px 15px;
+    height: 45px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+
+    outline: none;
+    transition: all 0.3s ease;
+}
+
+.login input::placeholder {
+    color: #ccc;
+}
+
+.login input:focus {
+    border-color: #00d4ff;
+    box-shadow: 0 0 12px rgba(0, 212, 255, 0.5);
+}
+
+
+.btn-wrapper {
+    display: flex;
+    gap: 0px;
+    justify-content: center;
+    width: 100%;
+}
+
+.btn {
+    height: 40px;
+    width: 120px;
+    margin: 10px;
+    font-size: 16px;
+    border: 2px solid #5da6c5;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    font-weight: 600;
+    background: transparent;
+    border-radius: 30px;
+}
+
+.btn-transparent {
+    color: #fff;
+}
+
+.btn-transparent:hover {
+    background: #5da6c5;
+
+}
+
+.btn-filled {
+    background: #5da6c5;
+    color: #fff;
+}
+
+.btn-filled:hover {
+    background: transparent;
+    color: #fff;
+}
+@media (max-width: 768px) {
+    .login {
+        width: 90%;
+        padding: 25px;
+    }
+}
+.forget-password {
+    margin-top: 10px;
+    font-size: 0.9rem;
+    position: relative;
+    
+}
+.forget-password a {
+    color: #ccc;
+}

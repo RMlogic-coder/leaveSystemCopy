@@ -1,0 +1,14 @@
+{
+    "rates": {
+        "even2026": 200,
+        "odd2026": 200,
+        "even2025": 256,
+        "odd2025": 200
+    },
+    "locks": {
+        "even2026": false,
+        "odd2026": false,
+        "even2025": true,
+        "odd2025": false
+    }
+}

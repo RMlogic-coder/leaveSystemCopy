@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE-edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Warden Dashboard</title>
+    <link rel="stylesheet" href="style_warden.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+
+<body>
+
+    <div class="dashboard">
+
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <img src="Images/HorizontalWhite.png" alt="Logo" class="logo">
+                <button class="close-btn" onclick="toggleSidebar()">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <nav>
+                <a class="active" href="warden_dashboard.html">
+                    <i class="fa-solid fa-gauge"></i>
+                    <span>Dashboard</span>
+                </a>
+                <a href="warden_history.html">
+                    <i class="fa-solid fa-clock-rotate-left"></i>
+                    <span>History</span>
+                </a>
+                <a href="warden_students.html">
+                    <i class="fa-solid fa-users"></i>
+                    <span>All Students</span>
+                </a>
+                <a>
+                    <i class="fa-solid fa-gear"></i>
+                    <span>Settings</span>
+                </a>
+                <a  href="index.html" onclick="sessionStorage.clear()">
+                    <i class="fa-solid fa-right-from-bracket"></i>
+                    <span>Logout</span>
+                </a>
+            </nav>
+        </aside>
+
+        <!-- Main -->
+        <main class="main">
+
+            <!-- Topbar -->
+            <header class="topbar">
+                <button class="menu-btn" onclick="toggleSidebar()">☰</button>
+                <div class="topbar-center">
+                    <h3>Warden Dashboard</h3>
+                </div>
+                <div class="topbar-right">
+                    <div class="profile">Warden</div>
+                </div>
+            </header>
+
+            <!-- Content -->
+            <section class="content">
+                <div class="content-wrapper">
+
+                    <!-- Warden Info -->
+                    <div class="fa-info">
+                        <div class="fa-avatar">
+                            <i class="fa-solid fa-building-shield"></i>
+                        </div>
+                        <div class="fa-details">
+                            <h2>Mr. Ramesh Chand</h2>
+                            <p class="fa-role">Hostel Warden</p>
+                        </div>
+                    </div>
+
+                    <div class="cards">
+                        <div class="card">
+                            <h4>Hostel</h4>
+                            <p>Boys Hostel A</p><br><p>Girls Hostel A</p>
+                        </div>
+                        <div class="card">
+                            <h4>Total Students</h4>
+                            <p id="totalStudents">30</p>
+                        </div>
+                        <div class="card">
+                            <h4>Pending Approvals</h4>
+                            <p id="pendingCount">0</p>
+                        </div>
+                    </div>
+
+                    <!-- Pending Leave Requests Table -->
+                    <div class="table-section">
+                        <h3 class="section-title">
+                            <i class="fa-solid fa-clipboard-check"></i>
+                            Pending Leave Requests
+                        </h3>
+
+                        <div class="table-wrapper">
+                            <table class="client-table">
+                                <thead>
+                                    <tr>
+                                        <th>#</th>
+                                        <th>Name</th>
+                                        <th>Roll Number</th>
+                                        <th>Start Date</th>
+                                        <th>End Date</th>
+                                        <th>Days</th>
+                                        <th>Reason</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="requestTableBody">
+                                    <!-- Rows injected by JS -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Info Modal -->
+    <div class="modal-overlay" id="infoModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-circle-info"></i> Leave Details</h3>
+                <button class="modal-close" onclick="closeModal()">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <div class="modal-body" id="modalBody">
+                <!-- Filled dynamically -->
+            </div>
+            <div class="modal-footer">
+                <!-- Buttons rendered dynamically by JS -->
+            </div>
+        </div>
+    </div>
+
+    <script src="warden_dashboard.js"></script>
+
+</body>
+
+</html>

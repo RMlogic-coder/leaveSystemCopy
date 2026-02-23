@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE-edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mess Dashboard</title>
+    <link rel="stylesheet" href="style_mess_dashboard.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+
+<body>
+
+    <div class="dashboard">
+
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <img src="Images/HorizontalWhite.png" alt="Logo" class="logo">
+                <button class="close-btn" onclick="toggleSidebar()">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <nav>
+                <a class="active" href="mess_dashboard.html">
+                    <i class="fa-solid fa-gauge"></i>
+                    <span>Dashboard</span>
+                </a>
+                <a href="mess_history.html">
+                    <i class="fa-solid fa-clock-rotate-left"></i>
+                    <span>History</span>
+                </a>
+                <a>
+                    <i class="fa-solid fa-gear"></i>
+                    <span>Settings</span>
+                </a>
+                <a class="logout" href="index.html" onclick="sessionStorage.clear()">
+                    <i class="fa-solid fa-right-from-bracket"></i>
+                    <span>Logout</span>
+                </a>
+            </nav>
+        </aside>
+
+        <main class="main">
+            <header class="topbar">
+                <button class="menu-btn" onclick="toggleSidebar()">☰</button>
+                <div class="topbar-center">
+                    <h3>Mess Refund Dashboard</h3>
+                </div>
+                <div class="topbar-right">
+                    <div class="profile">Mess Office</div>
+                    <a href="index.html" class="logout-top" onclick="sessionStorage.clear()">
+                        <i class="fa-solid fa-right-from-bracket"></i>
+                    </a>
+                </div>
+            </header>
+
+            <section class="content">
+                <div class="content-wrapper">
+
+                    <div class="fa-info">
+                        <div class="fa-avatar">
+                            <i class="fa-solid fa-utensils"></i>
+                        </div>
+                        <div class="fa-details">
+                            <h2>Mess Refund Desk</h2>
+                            <p class="fa-role">Finance and Settlement</p>
+                        </div>
+                    </div>
+
+                    <div class="cards">
+                        <div class="card">
+                            <h4>Pending Refunds</h4>
+                            <p id="pendingCount">0</p>
+                        </div>
+                        <div class="card">
+                            <h4>Total Liability</h4>
+                            <p id="totalLiability">₹0</p>
+                        </div>
+                        <div class="card">
+                            <h4>Processed Amount</h4>
+                            <p id="processedAmount">₹0</p>
+                        </div>
+                    </div>
+
+                    
+
+                    <div class="table-section" style="margin-top: 18px;">
+                        <h3 class="section-title">
+                            <i class="fa-solid fa-money-check-dollar"></i>
+                            Approved Leaves — Refund Queue
+                        </h3>
+
+                        <div class="table-wrapper">
+                            <table class="client-table">
+                                <thead>
+                                    <tr>
+                                        <th>#</th>
+                                        <th>Name</th>
+                                        <th>Roll Number</th>
+                                        <th>Semester</th>
+                                        <th>Leave Period</th>
+                                        <th>Days</th>
+                                        <th>Amount</th>
+                                        <th>Refund To</th>
+                                        <th>Status</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="refundTableBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <div class="modal-overlay" id="infoModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-circle-info"></i> Refund Details</h3>
+                <button class="modal-close" onclick="closeModal()">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <div class="modal-body" id="modalBody"></div>
+            <div class="modal-footer" id="modalFooter"></div>
+        </div>
+    </div>
+
+    <script src="mess_dashboard.js"></script>
+</body>
+
+</html>
