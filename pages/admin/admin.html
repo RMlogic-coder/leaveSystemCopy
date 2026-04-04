@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin – Student Master Database</title>
+    <link rel="stylesheet" href="/css/style_admin.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<div class="dashboard">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+        <img src="/Images/logo.png" alt="IIIT Raichur" class="logo">
+        <nav>
+            <a href="#" class="active" id="navStudents"><i class="fa-solid fa-users"></i> Students</a>
+            <a href="#" id="navAddNew"><i class="fa-solid fa-user-plus"></i> Add Student</a>
+        </nav>
+        <a href="/index.html" class="logout"><i class="fa-solid fa-arrow-right-from-bracket"></i> Logout</a>
+    </aside>
+
+    <!-- Main content -->
+    <div class="main">
+        <!-- Topbar -->
+        <div class="topbar">
+            <h3><i class="fa-solid fa-database"></i>&nbsp; Student Master Database</h3>
+            <div class="topbar-right">
+                <div class="search-box">
+                    <i class="fa-solid fa-magnifying-glass"></i>
+                    <input type="text" id="searchInput" placeholder="Search by name or roll number…">
+                </div>
+                <span class="profile">Admin</span>
+                <a href="/index.html" class="logout-top" onclick="sessionStorage.clear()">
+                    <i class="fa-solid fa-right-from-bracket"></i>
+                </a>
+            </div>
+        </div>
+
+        <!-- Stats cards -->
+        <div class="cards">
+            <div class="card">
+                <div class="card-icon"><i class="fa-solid fa-users"></i></div>
+                <div>
+                    <p class="card-label">Total Students</p>
+                    <h2 id="statTotal">0</h2>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-icon"><i class="fa-solid fa-building"></i></div>
+                <div>
+                    <p class="card-label">Hostels</p>
+                    <h2 id="statHostels">0</h2>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-icon"><i class="fa-solid fa-graduation-cap"></i></div>
+                <div>
+                    <p class="card-label">Branches</p>
+                    <h2 id="statBranches">0</h2>
+                </div>
+            </div>
+        </div>
+
+        <!-- Content area -->
+        <div class="content">
+            <div class="content-wrapper">
+
+                <!-- Table View -->
+                <div id="tableView">
+                    <div class="section-header">
+                        <h3>All Students</h3>
+                        <button class="btn-add" id="btnAddFromTable"><i class="fa-solid fa-plus"></i> Add Student</button>
+                    </div>
+                    <div class="table-container">
+                        <table id="masterTable">
+                            <thead>
+                                <tr>
+                                    <th>Roll Number</th>
+                                    <th>Name</th>
+                                    <th>Year</th>
+                                    <th>Branch</th>
+                                    <th>Hostel</th>
+                                    <th>Phone</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="masterTableBody"></tbody>
+                        </table>
+                    </div>
+                    <div id="paginationContainer" style="display:flex; align-items:center; justify-content:flex-end; gap:10px; margin-top:14px;">
+                        <button class="btn-back" id="btnPrevPage" type="button"><i class="fa-solid fa-chevron-left"></i> Prev</button>
+                        <span id="pageInfo" style="font-size:12px; color:var(--muted); min-width:96px; text-align:center;">Page 1 of 1</span>
+                        <button class="btn-back" id="btnNextPage" type="button">Next <i class="fa-solid fa-chevron-right"></i></button>
+                    </div>
+                    <p id="noResults" class="no-results" style="display:none;">No students match your search.</p>
+                </div>
+
+                <!-- Edit / Add Form -->
+                <div id="formView" style="display:none;">
+                    <div class="section-header">
+                        <h3 id="formTitle">Edit Student</h3>
+                        <button class="btn-back" id="btnBack"><i class="fa-solid fa-arrow-left"></i> Back</button>
+                    </div>
+
+                    <form id="studentForm" novalidate>
+                        <!-- Personal Info -->
+                        <fieldset>
+                            <legend><i class="fa-solid fa-user"></i> Personal Information</legend>
+                            <div class="form-grid">
+                                <div class="form-group">
+                                    <label for="fRollNumber">Roll Number *</label>
+                                    <input type="text" id="fRollNumber" name="rollNumber" placeholder="e.g. CS25B1001" required>
+                                    <span class="field-error" id="errRollNumber"></span>
+                                </div>
+                                <div class="form-group">
+                                    <label for="fName">Full Name *</label>
+                                    <input type="text" id="fName" name="name" placeholder="Full Name" required>
+                                    <span class="field-error" id="errName"></span>
+                                </div>
+                                <div class="form-group">
+                                    <label for="fEmail">Email</label>
+                                    <input type="email" id="fEmail" name="email" placeholder="email@iiitr.ac.in">
+                                    <span class="field-error" id="errEmail"></span>
+                                </div>
+                                <div class="form-group">
+                                    <label for="fPhone">Phone *</label>
+                                    <input type="tel" id="fPhone" name="phone" placeholder="10-digit phone" required>
+                                    <span class="field-error" id="errPhone"></span>
+                                </div>
+                            </div>
+                        </fieldset>
+
+                        <!-- Family Info -->
+                        <fieldset>
+                            <legend><i class="fa-solid fa-people-roof"></i> Family Information</legend>
+                            <div class="form-grid">
+                                <div class="form-group">
+                                    <label for="fFatherName">Father's Name</label>
+                                    <input type="text" id="fFatherName" name="fatherName" placeholder="Father's Name">
+                                </div>
+                                <div class="form-group">
+                                    <label for="fFatherPhone">Father's Phone</label>
+                                    <input type="tel" id="fFatherPhone" name="fatherPhone" placeholder="10-digit phone">
+                                    <span class="field-error" id="errFatherPhone"></span>
+                                </div>
+                                <div class="form-group">
+                                    <label for="fMotherName">Mother's Name</label>
+                                    <input type="text" id="fMotherName" name="motherName" placeholder="Mother's Name">
+                                </div>
+                                <div class="form-group">
+                                    <label for="fMotherPhone">Mother's Phone</label>
+                                    <input type="tel" id="fMotherPhone" name="motherPhone" placeholder="10-digit phone">
+                                    <span class="field-error" id="errMotherPhone"></span>
+                                </div>
+                            </div>
+                        </fieldset>
+
+                        <!-- Academic Info -->
+                        <fieldset>
+                            <legend><i class="fa-solid fa-graduation-cap"></i> Academic Information</legend>
+                            <div class="form-grid">
+                                <div class="form-group">
+                                    <label for="fYear">Year</label>
+                                    <select id="fYear" name="year">
+                                        <option value="1">1</option>
+                                        <option value="2">2</option>
+                                        <option value="3">3</option>
+                                        <option value="4">4</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="fSemester">Semester</label>
+                                    <select id="fSemester" name="semester">
+                                        <option value="1">1</option>
+                                        <option value="2">2</option>
+                                        <option value="3">3</option>
+                                        <option value="4">4</option>
+                                        <option value="5">5</option>
+                                        <option value="6">6</option>
+                                        <option value="7">7</option>
+                                        <option value="8">8</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="fBranch">Branch</label>
+                                    <input type="text" id="fBranch" name="branch" placeholder="e.g. Computer Science">
+                                </div>
+                                <div class="form-group">
+                                    <label for="fHostelName">Hostel</label>
+                                    <select id="fHostelName" name="hostelName">
+                                        <option value="">Select Hostel</option>
+                                        <option value="Krishna">Krishna</option>
+                                        <option value="Tungabadra">Tungabadra</option>
+                                        <option value="Bheema">Bheema</option>
+                                        <option value="Federal">Federal</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="fRoomNumber">Room Number</label>
+                                    <input type="text" id="fRoomNumber" name="roomNumber" placeholder="e.g. A-101">
+                                </div>
+                                <div class="form-group">
+                                    <label for="fMessName">Mess</label>
+                                    <select id="fMessName" name="messName">
+                                        <option value="Bheema">Bheema</option>
+                                        <option value="Federal">Federal</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="fWarden">Warden</label>
+                                    <input type="text" id="fWarden" name="warden" placeholder="Warden Name">
+                                </div>
+                                <div class="form-group">
+                                    <label for="fFa">Faculty Advisor</label>
+                                    <select id="fFa" name="fa">
+                                        <option value="">Select Faculty Advisor</option>
+                                        <option value="Bharat Soni">Bharat</option>
+                                        <option value="Natesh">Natesh</option>
+                                        <option value="Jhanvi">Jhanvi</option>
+                                        <option value="Priyanka">Priyanka</option>
+                                        <option value="Alka">Alka</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </fieldset>
+
+                        <!-- Bank Info -->
+                        <fieldset>
+                            <legend><i class="fa-solid fa-building-columns"></i> Bank Details</legend>
+                            <div class="form-grid">
+                                <div class="form-group">
+                                    <label for="fBankName">Bank Name</label>
+                                    <input type="text" id="fBankName" name="bankName" placeholder="e.g. SBI">
+                                </div>
+                                <div class="form-group">
+                                    <label for="fAccountNumber">Account Number</label>
+                                    <input type="text" id="fAccountNumber" name="accountNumber" placeholder="6-18 digits">
+                                    <span class="field-error" id="errAccountNumber"></span>
+                                </div>
+                                <div class="form-group">
+                                    <label for="fIfsc">IFSC Code</label>
+                                    <input type="text" id="fIfsc" name="ifsc" placeholder="e.g. SBIN0001234">
+                                    <span class="field-error" id="errIfsc"></span>
+                                </div>
+                            </div>
+                        </fieldset>
+
+                        <div class="form-actions">
+                            <button type="submit" class="btn-save" id="btnSave"><i class="fa-solid fa-floppy-disk"></i> Save</button>
+                            <button type="button" class="btn-cancel" id="btnCancel">Cancel</button>
+                        </div>
+
+                        <p id="formError" class="form-error" style="display:none;"></p>
+                        <p id="formSuccess" class="form-success" style="display:none;"></p>
+                    </form>
+                </div>
+
+                <!-- Delete confirmation modal -->
+                <div id="deleteModal" class="modal-overlay" style="display:none;">
+                    <div class="modal">
+                        <h3><i class="fa-solid fa-triangle-exclamation"></i> Confirm Delete</h3>
+                        <p>Are you sure you want to delete student <strong id="deleteRollLabel"></strong>? This cannot be undone.</p>
+                        <div class="modal-actions">
+                            <button class="btn-danger" id="btnConfirmDelete"><i class="fa-solid fa-trash"></i> Delete</button>
+                            <button class="btn-cancel" id="btnCancelDelete">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="/js/admin.js"></script>
+</body>
+</html>

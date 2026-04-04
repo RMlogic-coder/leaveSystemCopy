@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE-edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FA Students</title>
+    <link rel="stylesheet" href="/css/style_fa_dashboard.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+
+<body>
+
+    <div class="dashboard">
+
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <img src="/Images/HorizontalWhite.png" alt="Logo" class="logo">
+                <button class="close-btn" onclick="toggleSidebar()">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <nav>
+                <a href="/pages/fa/fa_dashboard.html">
+                    <i class="fa-solid fa-gauge"></i>
+                    <span>Dashboard</span>
+                </a>
+                <a href="/pages/fa/fa_history.html">
+                    <i class="fa-solid fa-clock-rotate-left"></i>
+                    <span>History</span>
+                </a>
+                <a class="active" href="/pages/fa/fa_students.html">
+                    <i class="fa-solid fa-users"></i>
+                    <span>All Students</span>
+                </a>
+                <a>
+                    <i class="fa-solid fa-gear"></i>
+                    <span>Settings</span>
+                </a>
+                <a class="logout" href="/index.html" onclick="sessionStorage.clear()">
+                    <i class="fa-solid fa-right-from-bracket"></i>
+                    <span>Logout</span>
+                </a>
+            </nav>
+        </aside>
+
+        <!-- Main -->
+        <main class="main">
+
+            <!-- Topbar -->
+            <header class="topbar">
+                <button class="menu-btn" onclick="toggleSidebar()">☰</button>
+                <div class="topbar-center">
+                    <h3>All Students</h3>
+                </div>
+                <div class="topbar-right">
+                    <button type="button" class="profile switch-role-btn" id="switchRoleBtn" onclick="switchRole()">
+                        Switch Role
+                    </button>
+                </div>
+            </header>
+
+            <!-- Content -->
+            <section class="content">
+                <div class="content-wrapper">
+
+                    <div class="cards">
+                        <div class="card">
+                            <h4>My Students</h4>
+                            <p id="statTotal">0</p>
+                        </div>
+                        <div class="card">
+                            <h4>Showing</h4>
+                            <p id="statShowing">0</p>
+                        </div>
+                        <div class="card">
+                            <h4>Current Page</h4>
+                            <p id="statPage">1 / 1</p>
+                        </div>
+                    </div>
+
+                    <div class="table-section">
+                        <h3 class="section-title">
+                            <i class="fa-solid fa-users"></i>
+                            Student Directory
+                        </h3>
+
+                        <div class="filter-bar" style="margin-bottom:14px;">
+                            <input
+                                type="text"
+                                id="studentSearch"
+                                class="student-search"
+                                placeholder="Search by name, roll number, branch, room, or hostel"
+                                aria-label="Search students"
+                            >
+                        </div>
+
+                        <div class="table-wrapper">
+                            <table class="client-table">
+                                <thead>
+                                    <tr>
+                                        <th>#</th>
+                                        <th>Roll Number</th>
+                                        <th>Name</th>
+                                        <th>Father Name</th>
+                                        <th>Branch</th>
+                                        <th>Room</th>
+                                        <th>Hostel</th>
+                                        <th>Phone</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="studentTableBody"></tbody>
+                            </table>
+                        </div>
+
+                        <div class="pagination-container" id="paginationContainer">
+                            <button class="pagination-btn" id="prevBtn" onclick="prevPage()">
+                                <i class="fa-solid fa-chevron-left"></i> Previous
+                            </button>
+                            <span class="pagination-info" id="pageInfo">Page 1 of 1</span>
+                            <button class="pagination-btn" id="nextBtn" onclick="nextPage()">
+                                Next <i class="fa-solid fa-chevron-right"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <div class="modal-overlay" id="infoModal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-circle-info"></i> Student Details</h3>
+                <button class="modal-close" onclick="closeInfoModal()">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <div class="modal-body" id="infoModalBody"></div>
+            <div class="modal-footer">
+                <button class="btn-modal-close" onclick="closeInfoModal()">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="requestsModal">
+        <div class="modal" style="max-width:700px;">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-clipboard-list"></i> Leave Requests</h3>
+                <button class="modal-close" onclick="closeRequestsModal()">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <div class="modal-body" id="requestsModalBody"></div>
+            <div class="modal-footer">
+                <button class="btn-modal-close" onclick="closeRequestsModal()">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/js/fa_students.js"></script>
+
+</body>
+
+</html>

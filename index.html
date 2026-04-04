@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Leave system IIITR</title>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="css/style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Gravitas+One&display=swap"
@@ -17,18 +17,38 @@
         <h1>User Login</h1>
 
         <form id="loginForm" onsubmit="return handleLogin(event)">
+
             <input type="text" id="Username" name="Username" placeholder="Username" required><br>
             <input type="password" id="Password" name="Password" placeholder="Password" required><br>
+            <select id="Role" name="Role" required style="    width: 100%;
+    padding: 12px 15px;
+    height: 45px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+
+    outline: none;
+    transition: all 0.3s ease;">
+                <option value="auto" selected>Auto Detect Role</option>
+                <!-- <option value="student">Student</option> -->
+                <option value="warden">Warden</option>
+                <option value="fa">Faculty Advisor</option>
+                <!-- <option value="mess">Mess</option>
+                <option value="admin">Admin</option> -->
+            </select><br>
         </form>
-        <p id="loginError" style="color:#ff4444; font-size:13px; margin-top:8px; display:none;"></p>
+        <p id="loginError" style="color:#ffffff; font-size:13px; margin-top:8px; display:none;"></p>
         <div class="btn-wrapper">
             <button class="btn btn-filled" onclick="handleLogin(event)">Login</button>
         </div>
-        <div class="credentials-hint" style="margin-top:18px; font-size:12px; color:#aaa; text-align:left; line-height:1.8;">
+        <div class="credentials-hint"
+            style="margin-top:18px; font-size:12px; color:#aaa; text-align:left; line-height:1.8;">
             <p style="color:#5da6c5; font-weight:600; margin-bottom:4px;">Demo Credentials:</p>
-            <p><b>Student:</b> student / student123</p>
-            <p><b>Warden:</b> warden / warden123</p>
-            <p><b>FA:</b> fa / fa123</p>
+            <p><b>Student:</b> Roll Number / 1234 (CS25B1034 / 1234)</p>
+            <p><b>Warden:</b> Warden ID / 1234 (NBV101 / 1234)</p>
+            <p><b>FA:</b> FA ID / 1234 (BS101 / 1234)</p>
+            
             <p><b>Mess:</b> mess / mess123</p>
             <p><b>Admin:</b> admin / admin123</p>
         </div>
@@ -37,26 +57,98 @@
 
     <script>
         const users = [
-            { username: "student", password: "student123", role: "student", redirect: "student.html" },
-            { username: "warden",  password: "warden123",  role: "warden",  redirect: "warden_dashboard.html" },
-            { username: "fa",      password: "fa123",      role: "fa",      redirect: "fa_dashboard.html" },
-            { username: "mess",    password: "mess123",    role: "mess",    redirect: "mess_dashboard.html" },
-            { username: "admin",   password: "admin123",   role: "admin",   redirect: "admin.html" }
+            { username: "mess", password: "mess123", role: "mess", redirect: "/pages/mess/mess_dashboard.html" },
+            { username: "admin", password: "admin123", role: "admin", redirect: "/pages/admin/admin.html" }
         ];
+
+        const wardenIds = ["NBV101", "PS101", "AC101"];
+        const faIds = ["BS101", "AC101", "JT101", "PS101", "NBV101"];
+        const wardenProfiles = {
+            NBV101: { name: "Natesh", hostelName: "Bheema" },
+            PS101: { name: "Priyanka", hostelName: "Krishna" },
+            AC101: { name: "Alka", hostelName: "Federal" },
+            JT101: { name: "Jhanvi", hostelName: "Tungabadra" }
+        };
+
+        function isLikelyRollNumber(value) {
+            return /^[A-Z]{2,4}\d{2}[A-Z]\d{3,4}$/i.test(String(value || "").trim());
+        }
 
         function handleLogin(e) {
             e.preventDefault();
-            const username = document.getElementById("Username").value.trim().toLowerCase();
+            const roleSelection = document.getElementById("Role").value;
+            const usernameRaw = document.getElementById("Username").value.trim();
+            const username = usernameRaw.toLowerCase();
             const password = document.getElementById("Password").value;
             const errEl = document.getElementById("loginError");
+            const uppercaseUsername = usernameRaw.toUpperCase();
 
-            const user = users.find(u => u.username === username && u.password === password);
+            const messOrAdminUser = users.find(u => u.username === username && u.password === password);
 
-            if (user) {
-                sessionStorage.setItem("loggedInUser", JSON.stringify({ username: user.username, role: user.role }));
-                window.location.href = user.redirect;
+            const canLoginAsWarden = wardenIds.includes(uppercaseUsername) && password === "1234";
+            const canLoginAsFa = faIds.includes(uppercaseUsername) && password === "1234";
+            const canLoginAsStudent = isLikelyRollNumber(usernameRaw) && password === "1234";
+
+            let role = "";
+            let redirect = "";
+            let rollNumber = "";
+            let approverId = "";
+
+            if (roleSelection === "auto") {
+                if (messOrAdminUser) {
+                    role = messOrAdminUser.role;
+                    redirect = messOrAdminUser.redirect;
+                } else if (canLoginAsWarden && canLoginAsFa) {
+                    errEl.textContent = "This ID has dual roles. Please select Warden or Faculty Advisor.";
+                    errEl.style.display = "block";
+                    return false;
+                } else if (canLoginAsWarden) {
+                    role = "warden";
+                    redirect = "/pages/warden/warden_dashboard.html";
+                    approverId = uppercaseUsername;
+                } else if (canLoginAsFa) {
+                    role = "fa";
+                    redirect = "/pages/fa/fa_dashboard.html";
+                    approverId = uppercaseUsername;
+                } else if (canLoginAsStudent) {
+                    role = "student";
+                    redirect = "/pages/student/student.html";
+                    rollNumber = uppercaseUsername;
+                }
+            } else if (roleSelection === "warden" && canLoginAsWarden) {
+                role = "warden";
+                redirect = "/pages/warden/warden_dashboard.html";
+                approverId = uppercaseUsername;
+            } else if (roleSelection === "fa" && canLoginAsFa) {
+                role = "fa";
+                redirect = "/pages/fa/fa_dashboard.html";
+                approverId = uppercaseUsername;
+            } else if (roleSelection === "student" && canLoginAsStudent) {
+                role = "student";
+                redirect = "/pages/student/student.html";
+                rollNumber = uppercaseUsername;
+            } else if ((roleSelection === "mess" || roleSelection === "admin") && messOrAdminUser && messOrAdminUser.role === roleSelection) {
+                role = messOrAdminUser.role;
+                redirect = messOrAdminUser.redirect;
+            }
+
+            if (role) {
+                errEl.style.display = "none";
+
+                const profile = role === "warden" ? (wardenProfiles[uppercaseUsername] || {}) : {};
+
+                sessionStorage.setItem("loggedInUser", JSON.stringify({
+                    username: role === "student" ? uppercaseUsername : usernameRaw,
+                    role,
+                    rollNumber,
+                    approverId,
+                    approverName: profile.name || "",
+                    hostelName: profile.hostelName || "",
+                    displayName: profile.name || usernameRaw
+                }));
+                window.location.href = redirect;
             } else {
-                errEl.textContent = "Invalid username or password.";
+                errEl.textContent = "Invalid credentials for selected role.";
                 errEl.style.display = "block";
             }
             return false;
