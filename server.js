@@ -1,9 +1,11 @@
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
+require("dotenv").config();
+const { initializeFirebaseAdmin, isFirebaseReady, readFromFirebase, writeToFirebase } = require("./firebaseAdmin");
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const AUTH_ENABLED = process.env.AUTH_ENABLED === "true";
 const API_ACCESS_KEY = process.env.API_ACCESS_KEY || "";
 
@@ -15,6 +17,16 @@ const STUDENT_MASTER_FILE = path.join(__dirname, "data", "student_master.json");
 const MESS_RATES_FILE = path.join(__dirname, "data", "mess_semester_rates.json");
 const HOSTEL_WARDEN_FILE = path.join(__dirname, "data", "hostel_warden_mapping.json");
 const CREDENTIALS_FILE = path.join(__dirname, "data", "credentials.json");
+const FIREBASE_NODE_BY_FILE = {
+    [path.basename(CREDENTIALS_FILE)]: "credentials",
+    [path.basename(DATA_FILE)]: "fa_leave_requests",
+    [path.basename(WARDEN_LEAVE_FILE)]: "warden_leave_requests",
+    [path.basename(WARDEN_STUDENTS_FILE)]: "warden_students",
+    [path.basename(STUDENT_LEAVE_FILE)]: "leave_data",
+    [path.basename(STUDENT_MASTER_FILE)]: "student_master",
+    [path.basename(MESS_RATES_FILE)]: "mess_semester_rates",
+    [path.basename(HOSTEL_WARDEN_FILE)]: "hostel_warden_mapping"
+};
 
 const VALID_WARDEN_APPROVALS = ["Pending", "Approved", "Rejected"];
 const VALID_FA_APPROVALS = ["Pending", "Approved", "Rejected"];
@@ -65,6 +77,12 @@ app.use((req, res, next) => {
 });
 
 app.use(express.static(__dirname));
+
+initializeFirebaseAdmin();
+if (!isFirebaseReady()) {
+    console.error("[firebase] Firebase Admin is required but not initialized. Check FIREBASE_ENABLED, FIREBASE_DB_URL, and service account credentials.");
+    process.exit(1);
+}
 
 function pathMatchesTemplate(actualPath, templatePath) {
     const actual = String(actualPath || "").split("?")[0].split("/").filter(Boolean);
@@ -186,7 +204,72 @@ function readJsonFile(filePath) {
     }
 }
 
+async function readFirebaseNodeSafe(node) {
+    if (!isFirebaseReady()) return null;
+    try {
+        return await readFromFirebase(node);
+    } catch (err) {
+        console.warn(`[firebase] Read failed for ${node}: ${err.message}`);
+        return null;
+    }
+}
+
+async function readFirebaseArraySafe(node) {
+    const value = await readFirebaseNodeSafe(node);
+    return Array.isArray(value) ? value : null;
+}
+
+async function readFirebaseObjectSafe(node) {
+    const value = await readFirebaseNodeSafe(node);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    return value;
+}
+
+async function readArrayStore(filePath) {
+    const node = FIREBASE_NODE_BY_FILE[path.basename(filePath)];
+    if (!node) {
+        return { data: [], error: `No Firebase node configured for ${path.basename(filePath)}` };
+    }
+    const rows = await readFirebaseArraySafe(node);
+    if (!rows) {
+        return { data: [], error: `Failed to read ${node} from Firebase` };
+    }
+    return { data: rows, error: null };
+}
+
+async function readObjectStore(filePath, fallback = {}) {
+    const node = FIREBASE_NODE_BY_FILE[path.basename(filePath)];
+    if (!node) {
+        return { data: fallback, error: `No Firebase node configured for ${path.basename(filePath)}` };
+    }
+    const obj = await readFirebaseObjectSafe(node);
+    if (!obj) {
+        return { data: fallback, error: `Failed to read ${node} from Firebase` };
+    }
+    return { data: obj, error: null };
+}
+
+async function writeArrayStore(filePath, data) {
+    const node = FIREBASE_NODE_BY_FILE[path.basename(filePath)];
+    if (!node) {
+        throw new Error(`No Firebase node configured for ${path.basename(filePath)}`);
+    }
+    await writeToFirebase(node, data);
+}
+
+async function writeObjectStore(filePath, data) {
+    const node = FIREBASE_NODE_BY_FILE[path.basename(filePath)];
+    if (!node) {
+        throw new Error(`No Firebase node configured for ${path.basename(filePath)}`);
+    }
+    await writeToFirebase(node, data);
+}
+
 function writeJsonArrayFile(filePath, data) {
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 4) + "\n");
+}
+
+function writeJsonObjectFile(filePath, data) {
     fs.writeFileSync(filePath, JSON.stringify(data, null, 4) + "\n");
 }
 
@@ -233,11 +316,45 @@ function readCredentialsStore() {
     };
 }
 
+function normalizeCredentialsStoreData(data = {}) {
+    const normalizeRows = (rows, role) => (Array.isArray(rows) ? rows : []).map((row) => ({
+        ...row,
+        id: normIdentityId(row && row.id),
+        name: normText(row && row.name),
+        password: normText(row && row.password),
+        role: normalizeApproverRole((row && row.role) || role),
+        active: row && row.active === false ? false : true
+    }));
+
+    return {
+        wardens: normalizeRows(data.wardens, "warden"),
+        fas: normalizeRows(data.fas, "fa")
+    };
+}
+
+async function readCredentialsStorePrimary() {
+    const { data, error } = await readObjectStore(CREDENTIALS_FILE, {});
+    if (error) return { data: { wardens: [], fas: [] }, error };
+    return { data: normalizeCredentialsStoreData(data), error: null };
+}
+
+async function loadStudentMasterMapPrimary() {
+    const { data, error } = await readArrayStore(STUDENT_MASTER_FILE);
+    if (error) return { map: new Map(), error };
+
+    const map = new Map();
+    for (const row of data) {
+        const normalized = normalizeMasterStudent(row || {});
+        if (normalized.rollNumber) map.set(normalized.rollNumber, normalized);
+    }
+    return { map, error: null };
+}
+
 function writeCredentialsStore(store) {
-    fs.writeFileSync(CREDENTIALS_FILE, JSON.stringify({
+    writeJsonObjectFile(CREDENTIALS_FILE, {
         wardens: Array.isArray(store.wardens) ? store.wardens : [],
         fas: Array.isArray(store.fas) ? store.fas : []
-    }, null, 4) + "\n");
+    });
 }
 
 function getApproverRows(store, role) {
@@ -402,10 +519,54 @@ function loadApproverDirectory() {
     };
 }
 
-function loadHostelWardenMapping() {
-    const { data } = readJsonObjectFile(HOSTEL_WARDEN_FILE, {});
+async function loadApproverDirectoryPrimary() {
+    const { data, error } = await readCredentialsStorePrimary();
+    if (error) {
+        return {
+            directory: { wardensById: new Map(), wardensByName: new Map(), fasById: new Map(), fasByName: new Map() },
+            error
+        };
+    }
+
+    const wardens = Array.isArray(data.wardens) ? data.wardens : [];
+    const fas = Array.isArray(data.fas) ? data.fas : [];
+
+    const byId = (rows) => {
+        const map = new Map();
+        for (const row of rows) {
+            const id = normIdentityId(row && row.id);
+            const name = normText(row && row.name);
+            if (!id || !name) continue;
+            map.set(id, { id, name });
+        }
+        return map;
+    };
+
+    const byName = (rows) => {
+        const map = new Map();
+        for (const row of rows) {
+            const id = normIdentityId(row && row.id);
+            const name = normText(row && row.name);
+            if (!id || !name) continue;
+            map.set(normIdentity(name), { id, name });
+        }
+        return map;
+    };
+
+    return {
+        directory: {
+            wardensById: byId(wardens),
+            wardensByName: byName(wardens),
+            fasById: byId(fas),
+            fasByName: byName(fas)
+        },
+        error: null
+    };
+}
+
+function buildHostelWardenMap(raw) {
     const map = new Map();
-    const entries = data && typeof data === "object" && !Array.isArray(data) ? Object.entries(data) : [];
+    const entries = raw && typeof raw === "object" && !Array.isArray(raw) ? Object.entries(raw) : [];
 
     for (const [hostelName, value] of entries) {
         const key = normHostelKey(hostelName);
@@ -420,6 +581,17 @@ function loadHostelWardenMapping() {
     }
 
     return map;
+}
+
+function loadHostelWardenMapping() {
+    const { data } = readJsonObjectFile(HOSTEL_WARDEN_FILE, {});
+    return buildHostelWardenMap(data);
+}
+
+async function loadHostelWardenMappingPrimary() {
+    const { data, error } = await readObjectStore(HOSTEL_WARDEN_FILE, {});
+    if (error) return { map: new Map(), error };
+    return { map: buildHostelWardenMap(data), error: null };
 }
 
 function resolveFaIdentity(candidate, approvers) {
@@ -448,11 +620,18 @@ function resolveFaIdentity(candidate, approvers) {
     return { ok: true, value: byName };
 }
 
-function applyMasterAssignments(candidate, options = {}) {
+async function applyMasterAssignments(candidate, options = {}) {
     const errors = [];
     const next = { ...candidate };
-    const mapping = loadHostelWardenMapping();
-    const approvers = loadApproverDirectory();
+    const { map: mapping, error: mappingError } = await loadHostelWardenMappingPrimary();
+    const { directory: approvers, error: approverError } = await loadApproverDirectoryPrimary();
+
+    if (mappingError) {
+        errors.push(mappingError);
+    }
+    if (approverError) {
+        errors.push(approverError);
+    }
 
     const hostelName = normText(next.hostelName);
     const hostelKey = normHostelKey(hostelName);
@@ -618,7 +797,7 @@ function readMessRatesModel() {
 }
 
 function writeMessRatesModel(model) {
-    fs.writeFileSync(MESS_RATES_FILE, JSON.stringify(model, null, 4) + "\n");
+    writeJsonObjectFile(MESS_RATES_FILE, model);
 }
 
 function semesterToPeriod(semester, startDate) {
@@ -889,7 +1068,7 @@ function reconcileStudentLeavesWithFaQueue() {
     }
 }
 
-app.post("/api/auth/login", (req, res) => {
+app.post("/api/auth/login", async (req, res) => {
     const roleSelection = normText(req.body && (req.body.roleSelection || req.body.role || req.body.selectedRole)).toLowerCase();
     const usernameRaw = normText(req.body && (req.body.username || req.body.Username));
     const password = normText(req.body && (req.body.password || req.body.Password));
@@ -906,11 +1085,11 @@ app.post("/api/auth/login", (req, res) => {
     ];
     const staticMatch = staticAccounts.find((user) => user.username === lowerUsername && user.password === password);
 
-    const { data: credentials } = readCredentialsStore();
+    const { data: credentials } = await readCredentialsStorePrimary();
     const wardenMatch = credentials.wardens.find((row) => row.active !== false && normIdentityId(row.id) === uppercaseUsername && normText(row.password) === password);
     const faMatch = credentials.fas.find((row) => row.active !== false && normIdentityId(row.id) === uppercaseUsername && normText(row.password) === password);
 
-    const { map: studentMap } = loadStudentMasterMap();
+    const { map: studentMap } = await loadStudentMasterMapPrimary();
     const student = studentMap.get(uppercaseUsername);
 
     const wardenSession = (row) => ({
@@ -979,9 +1158,9 @@ app.post("/api/auth/login", (req, res) => {
     return res.status(401).json({ error: "Invalid credentials for selected role." });
 });
 
-app.get("/api/approvers", (req, res) => {
+app.get("/api/approvers", async (req, res) => {
     const requestedRole = normalizeApproverRole(req.query && req.query.role);
-    const { data, error } = readCredentialsStore();
+    const { data, error } = await readCredentialsStorePrimary();
     if (error) return res.status(500).json({ error });
 
     if (requestedRole) {
@@ -994,7 +1173,7 @@ app.get("/api/approvers", (req, res) => {
     });
 });
 
-app.post("/api/approvers", (req, res) => {
+app.post("/api/approvers", async (req, res) => {
     const role = normalizeApproverRole(req.body && req.body.role);
     const id = normIdentityId(req.body && req.body.id);
     const name = normText(req.body && req.body.name);
@@ -1006,7 +1185,7 @@ app.post("/api/approvers", (req, res) => {
         return res.status(400).json({ error: "id, name, and password are required" });
     }
 
-    const { data, error } = readCredentialsStore();
+    const { data, error } = await readCredentialsStorePrimary();
     if (error) return res.status(500).json({ error });
     if (approverExistsEverywhere(data, id)) {
         return res.status(409).json({ error: `Approver ${id} already exists` });
@@ -1020,7 +1199,17 @@ app.post("/api/approvers", (req, res) => {
     getApproverRows(data, role).push(record);
 
     if (role === "warden") {
-        const map = loadHostelWardenMapping();
+        const { data: currentMap } = await readObjectStore(HOSTEL_WARDEN_FILE, {});
+        const map = new Map();
+        for (const [hostelNameKey, value] of Object.entries(currentMap || {})) {
+            const key = normHostelKey(hostelNameKey);
+            if (!key) continue;
+            map.set(key, {
+                hostelName: normText((value && value.hostelName) || hostelNameKey),
+                wardenId: normIdentityId(value && value.wardenId),
+                warden: normText(value && value.warden)
+            });
+        }
         for (const [key, value] of map.entries()) {
             if (normIdentityId(value.wardenId) === id) {
                 map.delete(key);
@@ -1035,11 +1224,14 @@ app.post("/api/approvers", (req, res) => {
         for (const [key, value] of map.entries()) {
             nextMapping[value.hostelName || key] = value;
         }
-        fs.writeFileSync(HOSTEL_WARDEN_FILE, JSON.stringify(nextMapping, null, 4) + "\n");
+        await writeObjectStore(HOSTEL_WARDEN_FILE, nextMapping);
     }
 
     try {
-        writeCredentialsStore(data);
+        await writeObjectStore(CREDENTIALS_FILE, {
+            wardens: Array.isArray(data.wardens) ? data.wardens : [],
+            fas: Array.isArray(data.fas) ? data.fas : []
+        });
         res.json({ success: true, approver: normalizeApproverRow(record, role) });
     } catch (err) {
         console.error("Error writing credentials file:", err);
@@ -1047,14 +1239,14 @@ app.post("/api/approvers", (req, res) => {
     }
 });
 
-app.delete("/api/approvers/:role/:id", (req, res) => {
+app.delete("/api/approvers/:role/:id", async (req, res) => {
     const role = normalizeApproverRole(req.params.role);
     const id = normIdentityId(req.params.id);
 
     if (!role) return res.status(400).json({ error: "Role must be fa or warden" });
     if (!id) return res.status(400).json({ error: "Approver id is required" });
 
-    const { data, error } = readCredentialsStore();
+    const { data, error } = await readCredentialsStorePrimary();
     if (error) return res.status(500).json({ error });
 
     const approverIndex = findApproverIndex(data, role, id);
@@ -1066,7 +1258,10 @@ app.delete("/api/approvers/:role/:id", (req, res) => {
     current.active = false;
 
     try {
-        writeCredentialsStore(data);
+        await writeObjectStore(CREDENTIALS_FILE, {
+            wardens: Array.isArray(data.wardens) ? data.wardens : [],
+            fas: Array.isArray(data.fas) ? data.fas : []
+        });
         res.json({ success: true });
     } catch (err) {
         console.error("Error updating credentials file:", err);
@@ -1074,23 +1269,19 @@ app.delete("/api/approvers/:role/:id", (req, res) => {
     }
 });
 
-sanitizeMasterDatabase();
-backfillLeavesFromMaster();
-reconcileStudentLeavesWithFaQueue();
-
 // ===== Master Student Routes =====
 
-app.get("/api/student-master", (req, res) => {
-    const { data, error } = readJsonFile(STUDENT_MASTER_FILE);
+app.get("/api/student-master", async (req, res) => {
+    const { data, error } = await readArrayStore(STUDENT_MASTER_FILE);
     if (error) return res.status(500).json({ error });
     res.json(data.map(normalizeMasterStudent));
 });
 
-app.get("/api/student-master/:rollNumber", (req, res) => {
+app.get("/api/student-master/:rollNumber", async (req, res) => {
     const roll = normText(req.params.rollNumber).toUpperCase();
     if (!roll) return res.status(400).json({ error: "rollNumber is required" });
 
-    const { map, error } = loadStudentMasterMap();
+    const { map, error } = await loadStudentMasterMapPrimary();
     if (error) return res.status(500).json({ error });
 
     const student = map.get(roll);
@@ -1099,18 +1290,19 @@ app.get("/api/student-master/:rollNumber", (req, res) => {
     res.json(student);
 });
 
-app.get("/api/hostel-warden-mapping", (req, res) => {
-    const mapping = loadHostelWardenMapping();
+app.get("/api/hostel-warden-mapping", async (req, res) => {
+    const { map: mapping, error } = await loadHostelWardenMappingPrimary();
+    if (error) return res.status(500).json({ error });
     const hostels = Array.from(mapping.values()).sort((a, b) => a.hostelName.localeCompare(b.hostelName));
     res.json(hostels);
 });
 
 // ===== FA Routes =====
 
-app.get("/api/leave-requests", (req, res) => {
-    const { data, error } = readJsonFile(DATA_FILE);
+app.get("/api/leave-requests", async (req, res) => {
+    const { data, error } = await readArrayStore(DATA_FILE);
     if (error) return res.status(500).json({ error: "Failed to read leave data" });
-    const { map, error: mapErr } = loadStudentMasterMap();
+    const { map, error: mapErr } = await loadStudentMasterMapPrimary();
     if (mapErr) return res.status(500).json({ error: mapErr });
 
     const requester = ensureApproverIdentity(req, res, { requireForRoles: ["fa"] });
@@ -1122,7 +1314,7 @@ app.get("/api/leave-requests", (req, res) => {
     res.json(scoped);
 });
 
-app.post("/api/update-leave", (req, res) => {
+app.post("/api/update-leave", async (req, res) => {
     try {
         if (!req.body || typeof req.body !== "object") {
             return res.status(400).json({ error: "Request body must be a JSON object" });
@@ -1163,13 +1355,13 @@ app.post("/api/update-leave", (req, res) => {
             return res.status(400).json({ error: "Approved status requires refundStatus to be Processing or No Refund" });
         }
 
-        const { data, error } = readJsonFile(DATA_FILE);
+        const { data, error } = await readArrayStore(DATA_FILE);
         if (error) return res.status(500).json({ error });
         if (index < 0 || index >= data.length) {
             return res.status(400).json({ error: "Invalid index" });
         }
 
-        const { map, error: mapErr } = loadStudentMasterMap();
+        const { map, error: mapErr } = await loadStudentMasterMapPrimary();
         if (mapErr) return res.status(500).json({ error: mapErr });
 
         const requester = ensureApproverIdentity(req, res, { requireForRoles: ["fa"] });
@@ -1183,13 +1375,13 @@ app.post("/api/update-leave", (req, res) => {
         data[index].refundStatus = refundStatus;
 
         try {
-            writeJsonArrayFile(DATA_FILE, data);
+            await writeArrayStore(DATA_FILE, data);
         } catch (err) {
             console.error("Error writing FA leave data:", err);
             return res.status(500).json({ error: "Failed to persist FA leave data" });
         }
 
-        const { data: studentLeaves, error: studentErr } = readJsonFile(STUDENT_LEAVE_FILE);
+        const { data: studentLeaves, error: studentErr } = await readArrayStore(STUDENT_LEAVE_FILE);
         if (studentErr) return res.status(500).json({ error: studentErr });
 
         const faSyncPatch = buildLeaveSyncPatch(data[index]);
@@ -1199,7 +1391,7 @@ app.post("/api/update-leave", (req, res) => {
         }
 
         try {
-            writeJsonArrayFile(STUDENT_LEAVE_FILE, studentLeaves);
+            await writeArrayStore(STUDENT_LEAVE_FILE, studentLeaves);
         } catch (err) {
             console.error("Error writing leave_data.json:", err);
             return res.status(500).json({ error: "Failed to persist leave_data.json sync" });
@@ -1214,10 +1406,10 @@ app.post("/api/update-leave", (req, res) => {
 
 // ===== Warden Routes =====
 
-app.get("/api/warden-leave-requests", (req, res) => {
-    const { data, error } = readJsonFile(WARDEN_LEAVE_FILE);
+app.get("/api/warden-leave-requests", async (req, res) => {
+    const { data, error } = await readArrayStore(WARDEN_LEAVE_FILE);
     if (error) return res.status(500).json({ error });
-    const { map, error: mapErr } = loadStudentMasterMap();
+    const { map, error: mapErr } = await loadStudentMasterMapPrimary();
     if (mapErr) return res.status(500).json({ error: mapErr });
 
     const requester = ensureApproverIdentity(req, res, { requireForRoles: ["warden"] });
@@ -1229,7 +1421,7 @@ app.get("/api/warden-leave-requests", (req, res) => {
     res.json(scoped);
 });
 
-app.post("/api/warden-update-leave", (req, res) => {
+app.post("/api/warden-update-leave", async (req, res) => {
     if (!req.body || typeof req.body !== "object") {
         return res.status(400).json({ error: "Request body must be a JSON object" });
     }
@@ -1247,11 +1439,11 @@ app.post("/api/warden-update-leave", (req, res) => {
         return res.status(400).json({ error: `Invalid wardenApproval. Allowed: ${VALID_WARDEN_APPROVALS.join(", ")}` });
     }
 
-    const { data, error } = readJsonFile(WARDEN_LEAVE_FILE);
+    const { data, error } = await readArrayStore(WARDEN_LEAVE_FILE);
     if (error) return res.status(500).json({ error });
     if (index < 0 || index >= data.length) return res.status(400).json({ error: `Invalid index ${index}. Must be 0–${data.length - 1}` });
 
-    const { map, error: mapErr } = loadStudentMasterMap();
+    const { map, error: mapErr } = await loadStudentMasterMapPrimary();
     if (mapErr) return res.status(500).json({ error: mapErr });
 
     const requester = ensureApproverIdentity(req, res, { requireForRoles: ["warden"] });
@@ -1273,7 +1465,7 @@ app.post("/api/warden-update-leave", (req, res) => {
     record.wardenApproval = wardenApproval;
     if (status === "Rejected") record.refundStatus = "No Refund";
 
-    const { data: studentLeaves, error: studentErr } = readJsonFile(STUDENT_LEAVE_FILE);
+    const { data: studentLeaves, error: studentErr } = await readArrayStore(STUDENT_LEAVE_FILE);
     if (studentErr) return res.status(500).json({ error: studentErr });
 
     const leaveSyncPatch = buildLeaveSyncPatch(record);
@@ -1283,14 +1475,14 @@ app.post("/api/warden-update-leave", (req, res) => {
     }
 
     try {
-        writeJsonArrayFile(WARDEN_LEAVE_FILE, data);
+        await writeArrayStore(WARDEN_LEAVE_FILE, data);
     } catch (err) {
         console.error("Error writing warden leave data:", err);
         return res.status(500).json({ error: "Failed to persist Warden approval" });
     }
 
     try {
-        writeJsonArrayFile(STUDENT_LEAVE_FILE, studentLeaves);
+        await writeArrayStore(STUDENT_LEAVE_FILE, studentLeaves);
     } catch (err) {
         console.error("Error writing leave_data.json:", err);
         return res.status(500).json({ error: "Failed to persist leave_data.json sync" });
@@ -1298,9 +1490,9 @@ app.post("/api/warden-update-leave", (req, res) => {
 
     if (status === "Pending FA Approval" && wardenApproval === "Approved") {
         try {
-            const { data: faData, error: faErr } = readJsonFile(DATA_FILE);
+            const { data: faData, error: faErr } = await readArrayStore(DATA_FILE);
             const faList = faErr ? [] : faData;
-            const { map: masterMap } = loadStudentMasterMap();
+            const { map: masterMap } = await loadStudentMasterMapPrimary();
             const master = masterMap.get(normText(record.rollNumber).toUpperCase());
             const source = master ? hydrateFromMaster(record, master) : record;
 
@@ -1337,7 +1529,7 @@ app.post("/api/warden-update-leave", (req, res) => {
                 applyLeaveSyncPatch(faList[existingIndex], propagatedSyncPatch);
             }
 
-            writeJsonArrayFile(DATA_FILE, faList);
+            await writeArrayStore(DATA_FILE, faList);
         } catch (propErr) {
             console.error("Warning: failed to propagate to FA queue:", propErr);
         }
@@ -1346,12 +1538,12 @@ app.post("/api/warden-update-leave", (req, res) => {
     res.json({ success: true });
 });
 
-app.get("/api/warden-students", (req, res) => {
+app.get("/api/warden-students", async (req, res) => {
     const requester = ensureApproverIdentity(req, res, { requireForRoles: ["warden"] });
     if (!requester) return;
     const shouldScopeToWarden = normText(req.authRole).toLowerCase() === "warden" && (requester.id || requester.name);
 
-    const { data: masterData, error: masterErr } = readJsonFile(STUDENT_MASTER_FILE);
+    const { data: masterData, error: masterErr } = await readArrayStore(STUDENT_MASTER_FILE);
     if (!masterErr) {
         const scopedMasterData = shouldScopeToWarden
             ? masterData.filter((s) => isRequesterAssigned(s, new Map(), "warden", requester))
@@ -1373,19 +1565,20 @@ app.get("/api/warden-students", (req, res) => {
         return res.json(mapped);
     }
 
-    const { data, error } = readJsonFile(WARDEN_STUDENTS_FILE);
+    const { data, error } = await readArrayStore(WARDEN_STUDENTS_FILE);
     if (error) return res.status(500).json({ error });
     res.json(data);
 });
 
 // ===== Mess Routes =====
 
-app.get("/api/mess-semester-rates", (req, res) => {
-    const model = readMessRatesModel();
+app.get("/api/mess-semester-rates", async (req, res) => {
+    const { data } = await readObjectStore(MESS_RATES_FILE, {});
+    const model = normalizeMessRatesModel(data);
     res.json(model);
 });
 
-app.post("/api/mess-semester-rates", (req, res) => {
+app.post("/api/mess-semester-rates", async (req, res) => {
     const { period, rate } = req.body || {};
     const key = normText(period).toLowerCase();
 
@@ -1398,7 +1591,8 @@ app.post("/api/mess-semester-rates", (req, res) => {
         return res.status(400).json({ error: "Rate must be a non-negative number" });
     }
 
-    const model = readMessRatesModel();
+    const { data: modelRaw } = await readObjectStore(MESS_RATES_FILE, {});
+    const model = normalizeMessRatesModel(modelRaw);
     if (model.locks[key]) {
         return res.status(400).json({ error: `Rate for ${key} is locked` });
     }
@@ -1406,7 +1600,7 @@ app.post("/api/mess-semester-rates", (req, res) => {
     model.rates[key] = numericRate;
 
     try {
-        writeMessRatesModel(model);
+        await writeObjectStore(MESS_RATES_FILE, model);
         res.json({ success: true, data: model });
     } catch (err) {
         console.error("Error writing semester rates:", err);
@@ -1414,7 +1608,7 @@ app.post("/api/mess-semester-rates", (req, res) => {
     }
 });
 
-app.post("/api/mess-rate-lock", (req, res) => {
+app.post("/api/mess-rate-lock", async (req, res) => {
     const { period, locked } = req.body || {};
     const key = normText(period).toLowerCase();
 
@@ -1425,11 +1619,12 @@ app.post("/api/mess-rate-lock", (req, res) => {
         return res.status(400).json({ error: "locked must be boolean" });
     }
 
-    const model = readMessRatesModel();
+    const { data: modelRaw } = await readObjectStore(MESS_RATES_FILE, {});
+    const model = normalizeMessRatesModel(modelRaw);
     model.locks[key] = locked;
 
     try {
-        writeMessRatesModel(model);
+        await writeObjectStore(MESS_RATES_FILE, model);
         res.json({ success: true, data: model });
     } catch (err) {
         console.error("Error updating lock state:", err);
@@ -1437,11 +1632,12 @@ app.post("/api/mess-rate-lock", (req, res) => {
     }
 });
 
-app.get("/api/mess-refunds", (req, res) => {
-    const model = readMessRatesModel();
-    const { data, error } = readJsonFile(DATA_FILE);
+app.get("/api/mess-refunds", async (req, res) => {
+    const { data: modelRaw } = await readObjectStore(MESS_RATES_FILE, {});
+    const model = normalizeMessRatesModel(modelRaw);
+    const { data, error } = await readArrayStore(DATA_FILE);
     if (error) return res.status(500).json({ error });
-    const { map } = loadStudentMasterMap();
+    const { map } = await loadStudentMasterMapPrimary();
     const hydrated = hydrateLeaveRows(data, map);
 
     const approved = hydrated
@@ -1469,7 +1665,7 @@ app.get("/api/mess-refunds", (req, res) => {
     res.json(approved);
 });
 
-app.post("/api/mess-update-refund", (req, res) => {
+app.post("/api/mess-update-refund", async (req, res) => {
     const { index, refundStatus, refundAmount, bankName, bankAccountNumber, bankIfsc } = req.body || {};
 
     if (!Number.isInteger(index)) return res.status(400).json({ error: "index must be an integer" });
@@ -1482,7 +1678,7 @@ app.post("/api/mess-update-refund", (req, res) => {
         return res.status(400).json({ error: "refundAmount must be a non-negative number" });
     }
 
-    const { data, error } = readJsonFile(DATA_FILE);
+    const { data, error } = await readArrayStore(DATA_FILE);
     if (error) return res.status(500).json({ error });
     if (index < 0 || index >= data.length) {
         return res.status(400).json({ error: `Invalid index ${index}. Must be 0–${data.length - 1}` });
@@ -1504,7 +1700,7 @@ app.post("/api/mess-update-refund", (req, res) => {
         item.refundProcessedBy = "Mess";
     }
 
-    const { data: studentLeaves, error: studentLeavesErr } = readJsonFile(STUDENT_LEAVE_FILE);
+    const { data: studentLeaves, error: studentLeavesErr } = await readArrayStore(STUDENT_LEAVE_FILE);
     if (studentLeavesErr) {
         return res.status(500).json({ error: studentLeavesErr });
     }
@@ -1515,14 +1711,14 @@ app.post("/api/mess-update-refund", (req, res) => {
     }
 
     try {
-        writeJsonArrayFile(DATA_FILE, data);
+        await writeArrayStore(DATA_FILE, data);
     } catch (err) {
         console.error("Error writing mess refund data:", err);
         return res.status(500).json({ error: "Failed to persist mess refund data" });
     }
 
     try {
-        writeJsonArrayFile(STUDENT_LEAVE_FILE, studentLeaves);
+        await writeArrayStore(STUDENT_LEAVE_FILE, studentLeaves);
     } catch (err) {
         console.error("Error writing leave_data.json:", err);
         return res.status(500).json({ error: "Failed to persist leave_data.json sync" });
@@ -1533,11 +1729,11 @@ app.post("/api/mess-update-refund", (req, res) => {
 
 // ===== Admin – Master Student CRUD =====
 
-app.put("/api/student-master/:rollNumber", (req, res) => {
+app.put("/api/student-master/:rollNumber", async (req, res) => {
     const roll = normText(req.params.rollNumber).toUpperCase();
     if (!roll) return res.status(400).json({ error: "rollNumber is required" });
 
-    const { data, error } = readJsonFile(STUDENT_MASTER_FILE);
+    const { data, error } = await readArrayStore(STUDENT_MASTER_FILE);
     if (error) return res.status(500).json({ error });
 
     const idx = data.findIndex((s) => normText(s.rollNumber).toUpperCase() === roll);
@@ -1554,7 +1750,7 @@ app.put("/api/student-master/:rollNumber", (req, res) => {
         merged.fa = "";
     }
 
-    const assigned = applyMasterAssignments(merged);
+    const assigned = await applyMasterAssignments(merged);
     const errors = [
         ...validateMasterFields(assigned.value),
         ...assigned.errors
@@ -1564,7 +1760,7 @@ app.put("/api/student-master/:rollNumber", (req, res) => {
     data[idx] = normalizeMasterStudent(assigned.value);
 
     try {
-        writeJsonArrayFile(STUDENT_MASTER_FILE, data);
+        await writeArrayStore(STUDENT_MASTER_FILE, data);
         res.json({ success: true, student: data[idx] });
     } catch (err) {
         console.error("Error updating master record:", err);
@@ -1572,19 +1768,19 @@ app.put("/api/student-master/:rollNumber", (req, res) => {
     }
 });
 
-app.post("/api/student-master", (req, res) => {
+app.post("/api/student-master", async (req, res) => {
     const body = req.body || {};
     const roll = normText(body.rollNumber).toUpperCase();
     if (!roll) return res.status(400).json({ error: "rollNumber is required" });
 
-    const { data, error } = readJsonFile(STUDENT_MASTER_FILE);
+    const { data, error } = await readArrayStore(STUDENT_MASTER_FILE);
     if (error) return res.status(500).json({ error });
 
     if (data.some((s) => normText(s.rollNumber).toUpperCase() === roll)) {
         return res.status(409).json({ error: `Student ${roll} already exists` });
     }
 
-    const assigned = applyMasterAssignments({ ...body, rollNumber: roll }, { requireFa: true });
+    const assigned = await applyMasterAssignments({ ...body, rollNumber: roll }, { requireFa: true });
     const errors = [
         ...validateMasterFields(assigned.value),
         ...assigned.errors
@@ -1595,7 +1791,7 @@ app.post("/api/student-master", (req, res) => {
     data.push(record);
 
     try {
-        writeJsonArrayFile(STUDENT_MASTER_FILE, data);
+        await writeArrayStore(STUDENT_MASTER_FILE, data);
         res.json({ success: true, student: record });
     } catch (err) {
         console.error("Error adding master record:", err);
@@ -1603,27 +1799,37 @@ app.post("/api/student-master", (req, res) => {
     }
 });
 
-app.delete("/api/student-master/:rollNumber", (req, res) => {
+app.delete("/api/student-master/:rollNumber", async (req, res) => {
     const roll = normText(req.params.rollNumber).toUpperCase();
     if (!roll) return res.status(400).json({ error: "rollNumber is required" });
 
-    const { data, error } = readJsonFile(STUDENT_MASTER_FILE);
+    const { data, error } = await readArrayStore(STUDENT_MASTER_FILE);
     if (error) return res.status(500).json({ error });
 
     const idx = data.findIndex((s) => normText(s.rollNumber).toUpperCase() === roll);
     if (idx === -1) return res.status(404).json({ error: `Student ${roll} not found` });
 
-    const deps = findStudentLeaveDependencies(roll);
-    if (deps.error) return res.status(500).json({ error: deps.error });
-    if (deps.references.length) {
-        const detail = deps.references.map((r) => `${r.store}: ${r.count}`).join(", ");
+    const dependencyStores = [
+        { label: "leave_data", file: STUDENT_LEAVE_FILE },
+        { label: "warden_leave_requests", file: WARDEN_LEAVE_FILE },
+        { label: "fa_leave_requests", file: DATA_FILE }
+    ];
+    const refs = [];
+    for (const store of dependencyStores) {
+        const loaded = await readArrayStore(store.file);
+        if (loaded.error) return res.status(500).json({ error: `Failed to read ${store.label}: ${loaded.error}` });
+        const count = loaded.data.filter((row) => normText(row && row.rollNumber).toUpperCase() === roll).length;
+        if (count > 0) refs.push({ store: store.label, count });
+    }
+    if (refs.length) {
+        const detail = refs.map((r) => `${r.store}: ${r.count}`).join(", ");
         return res.status(409).json({ error: `Cannot delete ${roll}: leave history exists (${detail})` });
     }
 
     data.splice(idx, 1);
 
     try {
-        writeJsonArrayFile(STUDENT_MASTER_FILE, data);
+        await writeArrayStore(STUDENT_MASTER_FILE, data);
         res.json({ success: true });
     } catch (err) {
         console.error("Error deleting master record:", err);
@@ -1671,12 +1877,12 @@ function validateMasterFields(body) {
 
 // ===== Student Routes =====
 
-app.get("/api/student-leaves", (req, res) => {
-    const { data, error } = readJsonFile(STUDENT_LEAVE_FILE);
+app.get("/api/student-leaves", async (req, res) => {
+    const { data, error } = await readArrayStore(STUDENT_LEAVE_FILE);
     if (error) return res.status(500).json({ error: "Failed to read student leave data" });
-    const { map } = loadStudentMasterMap();
+    const { map } = await loadStudentMasterMapPrimary();
 
-    const { data: faRows, error: faError } = readJsonFile(DATA_FILE);
+    const { data: faRows, error: faError } = await readArrayStore(DATA_FILE);
     const faByComposite = new Map();
     if (!faError && Array.isArray(faRows)) {
         for (const row of faRows) {
@@ -1706,7 +1912,7 @@ app.get("/api/student-leaves", (req, res) => {
     res.json(hydrated);
 });
 
-app.post("/api/submit-leave", (req, res) => {
+app.post("/api/submit-leave", async (req, res) => {
     try {
         const { rollNumber, parentRelation, startDate, endDate, reason } = req.body || {};
 
@@ -1729,7 +1935,7 @@ app.post("/api/submit-leave", (req, res) => {
             return res.status(400).json({ error: "End date must be after start date" });
         }
 
-        const { map, error: masterErr } = loadStudentMasterMap();
+        const { map, error: masterErr } = await loadStudentMasterMapPrimary();
         if (masterErr) return res.status(500).json({ error: masterErr });
 
         const student = map.get(normText(rollNumber).toUpperCase());
@@ -1738,10 +1944,10 @@ app.post("/api/submit-leave", (req, res) => {
         const selectedParent = parentRelation === "mother" ? student.motherPhone : student.fatherPhone;
         const totalDays = Math.floor((end - start) / (24 * 60 * 60 * 1000)) + 1;
 
-        const { data: studentLeaves, error: studentErr } = readJsonFile(STUDENT_LEAVE_FILE);
+        const { data: studentLeaves, error: studentErr } = await readArrayStore(STUDENT_LEAVE_FILE);
         if (studentErr) return res.status(500).json({ error: studentErr });
 
-        const { data: wardenLeaves, error: wardenErr } = readJsonFile(WARDEN_LEAVE_FILE);
+        const { data: wardenLeaves, error: wardenErr } = await readArrayStore(WARDEN_LEAVE_FILE);
         if (wardenErr) return res.status(500).json({ error: wardenErr });
 
         const compositeExists = (rows) => rows.some((row) =>
@@ -1789,8 +1995,8 @@ app.post("/api/submit-leave", (req, res) => {
         studentLeaves.push(leaveRecord);
         wardenLeaves.push({ ...leaveRecord });
 
-        writeJsonArrayFile(STUDENT_LEAVE_FILE, studentLeaves);
-        writeJsonArrayFile(WARDEN_LEAVE_FILE, wardenLeaves);
+        await writeArrayStore(STUDENT_LEAVE_FILE, studentLeaves);
+        await writeArrayStore(WARDEN_LEAVE_FILE, wardenLeaves);
         res.json({ success: true, status: "Pending Warden Approval" });
     } catch (err) {
         console.error("Error submitting leave:", err);
@@ -1801,6 +2007,7 @@ app.post("/api/submit-leave", (req, res) => {
 app.listen(PORT, () => {
     console.log(`✅ Server running at http://localhost:${PORT}`);
     console.log(`   Open http://localhost:${PORT}/index.html`);
+    console.log("[firebase] Firebase-only persistence is enabled.");
     if (!AUTH_ENABLED) {
         console.warn("⚠️ AUTH_ENABLED is false. API role checks are currently disabled.");
     }
