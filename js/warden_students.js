@@ -61,7 +61,7 @@ let wardenSession = {
 const WARDEN_PROFILES = {
     NBV101: { name: "Natesh", hostelName: "Bheema" },
     PS101: { name: "Priyanka", hostelName: "Krishna" },
-    AC101: { name: "Alka", hostelName: "Federal" },
+    P101: { name: "Pradhan", hostelName: "Federal" },
     JT101: { name: "Jhanvi", hostelName: "Tungabadra" }
 };
 

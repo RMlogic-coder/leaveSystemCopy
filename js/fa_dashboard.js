@@ -58,7 +58,7 @@ let faSession = {
 
 const FA_PROFILES = {
     BS101: { name: "Bharat Soni" },
-    AC101: { name: "Alka" },
+    P101: { name: "Pradhan" },
     JT101: { name: "Jhanvi" },
     PS101: { name: "Priyanka" },
     NBV101: { name: "Natesh" }

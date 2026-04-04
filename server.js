@@ -33,6 +33,9 @@ const ROUTE_ROLE_RULES = [
     { method: "POST", path: "/api/student-master", roles: ["admin"] },
     { method: "DELETE", path: "/api/student-master/:rollNumber", roles: ["admin"] },
     { method: "GET", path: "/api/hostel-warden-mapping", roles: ["admin", "fa", "warden"] },
+    { method: "GET", path: "/api/approvers", roles: ["admin"] },
+    { method: "POST", path: "/api/approvers", roles: ["admin"] },
+    { method: "DELETE", path: "/api/approvers/:role/:id", roles: ["admin"] },
 
     { method: "GET", path: "/api/leave-requests", roles: ["fa"] },
     { method: "POST", path: "/api/update-leave", roles: ["fa"] },
@@ -87,6 +90,7 @@ function findAllowedRoles(method, reqPath) {
 
 function apiAccessMiddleware(req, res, next) {
     if (!req.path.startsWith("/api/")) return next();
+    if (req.path === "/api/auth/login") return next();
     if (!AUTH_ENABLED) return next();
 
     const role = normText(req.headers["x-user-role"]).toLowerCase();
@@ -125,6 +129,15 @@ function normIdentity(value) {
 
 function normHostelKey(value) {
     return normText(value).toLowerCase().replace(/\s+/g, " ");
+}
+
+function normalizeHostelName(value) {
+    const key = normHostelKey(value);
+    if (key === "krishna") return "Krishna";
+    if (key === "tungabadra") return "Tungabadra";
+    if (key === "bheema") return "Bheema";
+    if (key === "federal") return "Federal";
+    return "";
 }
 
 function normIdentityId(value) {
@@ -191,6 +204,167 @@ function readJsonObjectFile(filePath, fallback = {}) {
     } catch {
         return { data: fallback, error: null };
     }
+}
+
+function normalizeApproverRole(role) {
+    const normalized = normText(role).toLowerCase();
+    return normalized === "fa" || normalized === "warden" ? normalized : "";
+}
+
+function readCredentialsStore() {
+    const { data, error } = readJsonObjectFile(CREDENTIALS_FILE, {});
+    if (error) return { data: { wardens: [], fas: [] }, error };
+
+    const normalizeRows = (rows, role) => (Array.isArray(rows) ? rows : []).map((row) => ({
+        ...row,
+        id: normIdentityId(row && row.id),
+        name: normText(row && row.name),
+        password: normText(row && row.password),
+        role: normalizeApproverRole((row && row.role) || role),
+        active: row && row.active === false ? false : true
+    }));
+
+    return {
+        data: {
+            wardens: normalizeRows(data.wardens, "warden"),
+            fas: normalizeRows(data.fas, "fa")
+        },
+        error: null
+    };
+}
+
+function writeCredentialsStore(store) {
+    fs.writeFileSync(CREDENTIALS_FILE, JSON.stringify({
+        wardens: Array.isArray(store.wardens) ? store.wardens : [],
+        fas: Array.isArray(store.fas) ? store.fas : []
+    }, null, 4) + "\n");
+}
+
+function getApproverRows(store, role) {
+    return role === "fa" ? store.fas : store.wardens;
+}
+
+function normalizeApproverRow(row, role) {
+    return {
+        id: normIdentityId(row && row.id),
+        name: normText(row && row.name),
+        password: normText(row && row.password),
+        role: normalizeApproverRole((row && row.role) || role),
+        active: row && row.active === false ? false : true,
+        hostelName: role === "warden" ? normalizeHostelName(row && row.hostelName) : ""
+    };
+}
+
+function listApproversByRole(store, role, options = {}) {
+    const normalizedRole = normalizeApproverRole(role);
+    if (!normalizedRole) return [];
+    const activeOnly = options.activeOnly !== false;
+    return getApproverRows(store, normalizedRole)
+        .map((row) => {
+            const normalized = normalizeApproverRow(row, normalizedRole);
+            if (normalizedRole !== "warden" || normalized.hostelName) return normalized;
+            return {
+                ...normalized,
+                hostelName: findWardenHostelById(store, normalized.id) || ""
+            };
+        })
+        .filter((row) => !activeOnly || row.active !== false);
+}
+
+function findApproverIndex(store, role, id) {
+    const normalizedRole = normalizeApproverRole(role);
+    if (!normalizedRole) return -1;
+    return getApproverRows(store, normalizedRole).findIndex((row) => normIdentityId(row && row.id) === normIdentityId(id));
+}
+
+function findApproverById(store, role, id, options = {}) {
+    const normalizedRole = normalizeApproverRole(role);
+    if (!normalizedRole) return null;
+    const activeOnly = options.activeOnly !== false;
+    return getApproverRows(store, normalizedRole)
+        .map((row) => normalizeApproverRow(row, normalizedRole))
+        .find((row) => row.id === normIdentityId(id) && (!activeOnly || row.active !== false)) || null;
+}
+
+function approverExistsEverywhere(store, id) {
+    const target = normIdentityId(id);
+    if (!target) return false;
+    return [...(store.wardens || []), ...(store.fas || [])].some((row) => normIdentityId(row && row.id) === target);
+}
+
+function findWardenHostelById(store, wardenId) {
+    const target = normIdentityId(wardenId);
+    const map = loadHostelWardenMapping();
+    const wardenRows = Array.isArray(store && store.wardens) ? store.wardens : [];
+
+    const storedHostel = wardenRows.find((row) => normIdentityId(row && row.id) === target);
+    if (storedHostel && normalizeHostelName(storedHostel.hostelName)) {
+        return normalizeHostelName(storedHostel.hostelName);
+    }
+
+    for (const row of map.values()) {
+        if (normIdentityId(row.wardenId) === target) return row.hostelName;
+    }
+    return "";
+}
+
+function findApproverDependencies(store, role, approver) {
+    const normalizedRole = normalizeApproverRole(role);
+    const approverId = normIdentityId(approver && approver.id);
+    const approverName = normText(approver && approver.name);
+    const studentDeps = [];
+    const mappingDeps = [];
+
+    const { map, error } = loadStudentMasterMap();
+    if (error) {
+        return { error: `Failed to read student master: ${error}`, references: [] };
+    }
+
+    for (const student of map.values()) {
+        const studentWardenId = normIdentityId(student.wardenId);
+        const studentFaId = normIdentityId(student.faId);
+        const studentWardenName = normIdentity(student.warden);
+        const studentFaName = normIdentity(student.fa);
+
+        if (normalizedRole === "warden" && (studentWardenId === approverId || (approverName && studentWardenName === normIdentity(approverName)))) {
+            studentDeps.push(student.rollNumber);
+        }
+        if (normalizedRole === "fa" && (studentFaId === approverId || (approverName && studentFaName === normIdentity(approverName)))) {
+            studentDeps.push(student.rollNumber);
+        }
+    }
+
+    if (normalizedRole === "warden") {
+        const hostelName = findWardenHostelById(store, approverId);
+        if (hostelName) {
+            mappingDeps.push(hostelName);
+        }
+    }
+
+    const references = [];
+    if (studentDeps.length) references.push({ store: "student_master", count: studentDeps.length });
+    if (mappingDeps.length) references.push({ store: "hostel_warden_mapping", count: mappingDeps.length });
+
+    return { error: null, references };
+}
+
+function buildLoginSession(role, identity) {
+    const normalizedRole = normalizeApproverRole(role);
+    const approverId = normIdentityId(identity && identity.id);
+    const approverName = normText(identity && identity.name);
+    const session = {
+        username: approverId || approverName,
+        role: normalizedRole,
+        approverId,
+        approverName,
+        displayName: approverName
+    };
+
+    if (normalizedRole === "warden") {
+        session.hostelName = findWardenHostelById(readCredentialsStore().data, approverId) || "";
+    }
+
+    return session;
 }
 
 function loadApproverDirectory() {
@@ -714,6 +888,191 @@ function reconcileStudentLeavesWithFaQueue() {
         writeJsonArrayFile(STUDENT_LEAVE_FILE, studentRows);
     }
 }
+
+app.post("/api/auth/login", (req, res) => {
+    const roleSelection = normText(req.body && (req.body.roleSelection || req.body.role || req.body.selectedRole)).toLowerCase();
+    const usernameRaw = normText(req.body && (req.body.username || req.body.Username));
+    const password = normText(req.body && (req.body.password || req.body.Password));
+    const uppercaseUsername = usernameRaw.toUpperCase();
+    const lowerUsername = usernameRaw.toLowerCase();
+
+    if (!usernameRaw || !password) {
+        return res.status(400).json({ error: "Username and password are required" });
+    }
+
+    const staticAccounts = [
+        { username: "mess", password: "mess123", role: "mess", redirect: "/pages/mess/mess_dashboard.html" },
+        { username: "admin", password: "admin123", role: "admin", redirect: "/pages/admin/admin.html" }
+    ];
+    const staticMatch = staticAccounts.find((user) => user.username === lowerUsername && user.password === password);
+
+    const { data: credentials } = readCredentialsStore();
+    const wardenMatch = credentials.wardens.find((row) => row.active !== false && normIdentityId(row.id) === uppercaseUsername && normText(row.password) === password);
+    const faMatch = credentials.fas.find((row) => row.active !== false && normIdentityId(row.id) === uppercaseUsername && normText(row.password) === password);
+
+    const { map: studentMap } = loadStudentMasterMap();
+    const student = studentMap.get(uppercaseUsername);
+
+    const wardenSession = (row) => ({
+        username: normIdentityId(row.id),
+        role: "warden",
+        approverId: normIdentityId(row.id),
+        approverName: normText(row.name),
+        displayName: normText(row.name),
+        hostelName: normalizeHostelName(row.hostelName) || findWardenHostelById(credentials, row.id) || ""
+    });
+
+    const faSession = (row) => ({
+        username: normIdentityId(row.id),
+        role: "fa",
+        approverId: normIdentityId(row.id),
+        approverName: normText(row.name),
+        displayName: normText(row.name)
+    });
+
+    const studentSession = () => ({
+        username: uppercaseUsername,
+        role: "student",
+        rollNumber: uppercaseUsername,
+        displayName: student.name
+    });
+
+    if (roleSelection === "auto") {
+        if (staticMatch) {
+            return res.json({ success: true, redirect: staticMatch.redirect, session: { username: staticMatch.username, role: staticMatch.role, displayName: staticMatch.username } });
+        }
+
+        if (wardenMatch && faMatch) {
+            return res.status(409).json({ error: "This ID has dual roles. Please select Warden or Faculty Advisor." });
+        }
+        if (wardenMatch) {
+            const session = wardenSession(wardenMatch);
+            return res.json({ success: true, redirect: "/pages/warden/warden_dashboard.html", session });
+        }
+        if (faMatch) {
+            const session = faSession(faMatch);
+            return res.json({ success: true, redirect: "/pages/fa/fa_dashboard.html", session });
+        }
+        if (student && password === "1234") {
+            return res.json({ success: true, redirect: "/pages/student/student.html", session: studentSession() });
+        }
+
+        return res.status(401).json({ error: "Invalid credentials for selected role." });
+    }
+
+    if ((roleSelection === "mess" || roleSelection === "admin") && staticMatch && staticMatch.role === roleSelection) {
+        return res.json({ success: true, redirect: staticMatch.redirect, session: { username: staticMatch.username, role: staticMatch.role, displayName: staticMatch.username } });
+    }
+
+    if (roleSelection === "warden" && wardenMatch) {
+        const session = wardenSession(wardenMatch);
+        return res.json({ success: true, redirect: "/pages/warden/warden_dashboard.html", session });
+    }
+    if (roleSelection === "fa" && faMatch) {
+        const session = faSession(faMatch);
+        return res.json({ success: true, redirect: "/pages/fa/fa_dashboard.html", session });
+    }
+    if (roleSelection === "student" && student && password === "1234") {
+        return res.json({ success: true, redirect: "/pages/student/student.html", session: studentSession() });
+    }
+
+    return res.status(401).json({ error: "Invalid credentials for selected role." });
+});
+
+app.get("/api/approvers", (req, res) => {
+    const requestedRole = normalizeApproverRole(req.query && req.query.role);
+    const { data, error } = readCredentialsStore();
+    if (error) return res.status(500).json({ error });
+
+    if (requestedRole) {
+        return res.json(listApproversByRole(data, requestedRole));
+    }
+
+    res.json({
+        wardens: listApproversByRole(data, "warden"),
+        fas: listApproversByRole(data, "fa")
+    });
+});
+
+app.post("/api/approvers", (req, res) => {
+    const role = normalizeApproverRole(req.body && req.body.role);
+    const id = normIdentityId(req.body && req.body.id);
+    const name = normText(req.body && req.body.name);
+    const password = normText(req.body && req.body.password);
+    const hostelName = normalizeHostelName(req.body && req.body.hostelName);
+
+    if (!role) return res.status(400).json({ error: "Role must be fa or warden" });
+    if (!id || !name || !password) {
+        return res.status(400).json({ error: "id, name, and password are required" });
+    }
+
+    const { data, error } = readCredentialsStore();
+    if (error) return res.status(500).json({ error });
+    if (approverExistsEverywhere(data, id)) {
+        return res.status(409).json({ error: `Approver ${id} already exists` });
+    }
+
+    if (role === "warden" && !hostelName) {
+        return res.status(400).json({ error: "A valid hostel is required for warden" });
+    }
+
+    const record = { id, name, password, role, hostelName: role === "warden" ? hostelName : "" };
+    getApproverRows(data, role).push(record);
+
+    if (role === "warden") {
+        const map = loadHostelWardenMapping();
+        for (const [key, value] of map.entries()) {
+            if (normIdentityId(value.wardenId) === id) {
+                map.delete(key);
+            }
+        }
+        map.set(normHostelKey(hostelName), {
+            hostelName,
+            wardenId: id,
+            warden: name
+        });
+        const nextMapping = {};
+        for (const [key, value] of map.entries()) {
+            nextMapping[value.hostelName || key] = value;
+        }
+        fs.writeFileSync(HOSTEL_WARDEN_FILE, JSON.stringify(nextMapping, null, 4) + "\n");
+    }
+
+    try {
+        writeCredentialsStore(data);
+        res.json({ success: true, approver: normalizeApproverRow(record, role) });
+    } catch (err) {
+        console.error("Error writing credentials file:", err);
+        res.status(500).json({ error: "Failed to save approver" });
+    }
+});
+
+app.delete("/api/approvers/:role/:id", (req, res) => {
+    const role = normalizeApproverRole(req.params.role);
+    const id = normIdentityId(req.params.id);
+
+    if (!role) return res.status(400).json({ error: "Role must be fa or warden" });
+    if (!id) return res.status(400).json({ error: "Approver id is required" });
+
+    const { data, error } = readCredentialsStore();
+    if (error) return res.status(500).json({ error });
+
+    const approverIndex = findApproverIndex(data, role, id);
+    if (approverIndex === -1) {
+        return res.status(404).json({ error: `${role.toUpperCase()} ${id} not found` });
+    }
+
+    const current = getApproverRows(data, role)[approverIndex];
+    current.active = false;
+
+    try {
+        writeCredentialsStore(data);
+        res.json({ success: true });
+    } catch (err) {
+        console.error("Error updating credentials file:", err);
+        res.status(500).json({ error: "Failed to delete approver" });
+    }
+});
 
 sanitizeMasterDatabase();
 backfillLeavesFromMaster();

@@ -17,6 +17,7 @@
         <nav>
             <a href="#" class="active" id="navStudents"><i class="fa-solid fa-users"></i> Students</a>
             <a href="#" id="navAddNew"><i class="fa-solid fa-user-plus"></i> Add Student</a>
+            <a href="#" id="navApprovers"><i class="fa-solid fa-people-gear"></i> Manage Approvers</a>
         </nav>
         <a href="/index.html" class="logout"><i class="fa-solid fa-arrow-right-from-bracket"></i> Logout</a>
     </aside>
@@ -25,7 +26,10 @@
     <div class="main">
         <!-- Topbar -->
         <div class="topbar">
-            <h3><i class="fa-solid fa-database"></i>&nbsp; Student Master Database</h3>
+            <button type="button" class="menu-toggle" id="menuToggle" aria-label="Toggle sidebar" aria-expanded="false">
+                <i class="fa-solid fa-bars"></i>
+            </button>
+            <h3 class="SMD"><i class="fa-solid fa-database"></i>&nbsp; Student Master Database</h3>
             <div class="topbar-right">
                 <div class="search-box">
                     <i class="fa-solid fa-magnifying-glass"></i>
@@ -220,7 +224,7 @@
                                         <option value="Natesh">Natesh</option>
                                         <option value="Jhanvi">Jhanvi</option>
                                         <option value="Priyanka">Priyanka</option>
-                                        <option value="Alka">Alka</option>
+                                        <option value="Pradhan">Pradhan</option>
                                     </select>
                                 </div>
                             </div>
@@ -257,11 +261,124 @@
                     </form>
                 </div>
 
+                <!-- Approvers View -->
+                <div id="approversView" style="display:none;">
+                    <div class="section-header">
+                        <h3>Manage Approvers</h3>
+                        <button class="btn-add" id="btnAddApprover"><i class="fa-solid fa-plus"></i> Add Approver</button>
+                    </div>
+
+                    <div class="cards" style="margin-bottom:20px;">
+                        <div class="card">
+                            <div class="card-icon"><i class="fa-solid fa-user-shield"></i></div>
+                            <div>
+                                <p class="card-label">Wardens</p>
+                                <h2 id="statWardens">0</h2>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-icon"><i class="fa-solid fa-user-tie"></i></div>
+                            <div>
+                                <p class="card-label">Faculty Advisors</p>
+                                <h2 id="statFas">0</h2>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-icon"><i class="fa-solid fa-id-card"></i></div>
+                            <div>
+                                <p class="card-label">Active Type</p>
+                                <h2 id="statApproverType">Wardens</h2>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="section-header" style="margin-bottom:14px; flex-wrap:wrap; gap:12px;">
+                        <div class="approver-tabs">
+                            <button type="button" class="btn-back approver-tab active" id="btnWardenApprovers">Wardens</button>
+                            <button type="button" class="btn-back approver-tab" id="btnFaApprovers">Faculty Advisors</button>
+                        </div>
+                        <div class="search-box" style="max-width:420px; width:100%;">
+                            <i class="fa-solid fa-magnifying-glass"></i>
+                            <input type="text" id="approverSearchInput" placeholder="Search by name or ID…">
+                        </div>
+                    </div>
+
+                    <div class="table-container">
+                        <table id="approverTable">
+                            <thead>
+                                <tr>
+                                    <th>Role</th>
+                                    <th>ID</th>
+                                    <th>Name</th>
+                                    <th>Hostel</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="approverTableBody"></tbody>
+                        </table>
+                    </div>
+
+                    <p id="approverNoResults" class="no-results" style="display:none;">No approvers found.</p>
+                </div>
+
+                <!-- Approver Form -->
+                <div id="approverFormView" style="display:none;">
+                    <div class="section-header">
+                        <h3 id="approverFormTitle">Add Approver</h3>
+                        <button class="btn-back" id="btnApproverBack"><i class="fa-solid fa-arrow-left"></i> Back</button>
+                    </div>
+
+                    <form id="approverForm" novalidate>
+                        <fieldset>
+                            <legend><i class="fa-solid fa-user-gear"></i> Approver Information</legend>
+                            <div class="form-grid">
+                                <div class="form-group">
+                                    <label for="aRole">Role *</label>
+                                    <select id="aRole" name="role" required>
+                                        <option value="warden">Warden</option>
+                                        <option value="fa">Faculty Advisor</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="aId">ID *</label>
+                                    <input type="text" id="aId" name="id" placeholder="e.g. JT101" required>
+                                </div>
+                                <div class="form-group">
+                                    <label for="aName">Name *</label>
+                                    <input type="text" id="aName" name="name" placeholder="Full name" required>
+                                </div>
+                                <div class="form-group" id="aHostelGroup">
+                                    <label for="aHostelName">Hostel *</label>
+                                    <select id="aHostelName" name="hostelName">
+                                        <option value="">Select Hostel</option>
+                                        <option value="Krishna">Krishna</option>
+                                        <option value="Tungabadra">Tungabadra</option>
+                                        <option value="Bheema">Bheema</option>
+                                        <option value="Federal">Federal</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label for="aPassword">Password *</label>
+                                    <input type="password" id="aPassword" name="password" placeholder="Password" required>
+                                </div>
+                            </div>
+                        </fieldset>
+
+                        <div class="form-actions">
+                            <button type="submit" class="btn-save"><i class="fa-solid fa-floppy-disk"></i> Save</button>
+                            <button type="button" class="btn-cancel" id="btnApproverCancel">Cancel</button>
+                        </div>
+
+                        <p id="approverFormError" class="form-error" style="display:none;"></p>
+                        <p id="approverFormSuccess" class="form-success" style="display:none;"></p>
+                    </form>
+                </div>
+
                 <!-- Delete confirmation modal -->
                 <div id="deleteModal" class="modal-overlay" style="display:none;">
                     <div class="modal">
                         <h3><i class="fa-solid fa-triangle-exclamation"></i> Confirm Delete</h3>
-                        <p>Are you sure you want to delete student <strong id="deleteRollLabel"></strong>? This cannot be undone.</p>
+                        <p>Are you sure you want to delete <strong id="deleteRollLabel"></strong>? This cannot be undone.</p>
                         <div class="modal-actions">
                             <button class="btn-danger" id="btnConfirmDelete"><i class="fa-solid fa-trash"></i> Delete</button>
                             <button class="btn-cancel" id="btnCancelDelete">Cancel</button>

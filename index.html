@@ -34,8 +34,8 @@
                 <!-- <option value="student">Student</option> -->
                 <option value="warden">Warden</option>
                 <option value="fa">Faculty Advisor</option>
-                <!-- <option value="mess">Mess</option>
-                <option value="admin">Admin</option> -->
+                <option value="mess">Mess</option>
+                <option value="admin">Admin</option>
             </select><br>
         </form>
         <p id="loginError" style="color:#ffffff; font-size:13px; margin-top:8px; display:none;"></p>
@@ -56,101 +56,46 @@
     </div>
 
     <script>
-        const users = [
-            { username: "mess", password: "mess123", role: "mess", redirect: "/pages/mess/mess_dashboard.html" },
-            { username: "admin", password: "admin123", role: "admin", redirect: "/pages/admin/admin.html" }
-        ];
-
-        const wardenIds = ["NBV101", "PS101", "AC101"];
-        const faIds = ["BS101", "AC101", "JT101", "PS101", "NBV101"];
-        const wardenProfiles = {
-            NBV101: { name: "Natesh", hostelName: "Bheema" },
-            PS101: { name: "Priyanka", hostelName: "Krishna" },
-            AC101: { name: "Alka", hostelName: "Federal" },
-            JT101: { name: "Jhanvi", hostelName: "Tungabadra" }
-        };
-
         function isLikelyRollNumber(value) {
             return /^[A-Z]{2,4}\d{2}[A-Z]\d{3,4}$/i.test(String(value || "").trim());
         }
 
-        function handleLogin(e) {
+        async function handleLogin(e) {
             e.preventDefault();
+
             const roleSelection = document.getElementById("Role").value;
             const usernameRaw = document.getElementById("Username").value.trim();
-            const username = usernameRaw.toLowerCase();
             const password = document.getElementById("Password").value;
             const errEl = document.getElementById("loginError");
-            const uppercaseUsername = usernameRaw.toUpperCase();
 
-            const messOrAdminUser = users.find(u => u.username === username && u.password === password);
+            try {
+                const res = await fetch("/api/auth/login", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        username: usernameRaw,
+                        password,
+                        roleSelection
+                    })
+                });
 
-            const canLoginAsWarden = wardenIds.includes(uppercaseUsername) && password === "1234";
-            const canLoginAsFa = faIds.includes(uppercaseUsername) && password === "1234";
-            const canLoginAsStudent = isLikelyRollNumber(usernameRaw) && password === "1234";
-
-            let role = "";
-            let redirect = "";
-            let rollNumber = "";
-            let approverId = "";
-
-            if (roleSelection === "auto") {
-                if (messOrAdminUser) {
-                    role = messOrAdminUser.role;
-                    redirect = messOrAdminUser.redirect;
-                } else if (canLoginAsWarden && canLoginAsFa) {
-                    errEl.textContent = "This ID has dual roles. Please select Warden or Faculty Advisor.";
+                const json = await res.json();
+                if (!res.ok) {
+                    errEl.textContent = json.error || "Invalid credentials for selected role.";
                     errEl.style.display = "block";
                     return false;
-                } else if (canLoginAsWarden) {
-                    role = "warden";
-                    redirect = "/pages/warden/warden_dashboard.html";
-                    approverId = uppercaseUsername;
-                } else if (canLoginAsFa) {
-                    role = "fa";
-                    redirect = "/pages/fa/fa_dashboard.html";
-                    approverId = uppercaseUsername;
-                } else if (canLoginAsStudent) {
-                    role = "student";
-                    redirect = "/pages/student/student.html";
-                    rollNumber = uppercaseUsername;
                 }
-            } else if (roleSelection === "warden" && canLoginAsWarden) {
-                role = "warden";
-                redirect = "/pages/warden/warden_dashboard.html";
-                approverId = uppercaseUsername;
-            } else if (roleSelection === "fa" && canLoginAsFa) {
-                role = "fa";
-                redirect = "/pages/fa/fa_dashboard.html";
-                approverId = uppercaseUsername;
-            } else if (roleSelection === "student" && canLoginAsStudent) {
-                role = "student";
-                redirect = "/pages/student/student.html";
-                rollNumber = uppercaseUsername;
-            } else if ((roleSelection === "mess" || roleSelection === "admin") && messOrAdminUser && messOrAdminUser.role === roleSelection) {
-                role = messOrAdminUser.role;
-                redirect = messOrAdminUser.redirect;
-            }
 
-            if (role) {
                 errEl.style.display = "none";
-
-                const profile = role === "warden" ? (wardenProfiles[uppercaseUsername] || {}) : {};
-
-                sessionStorage.setItem("loggedInUser", JSON.stringify({
-                    username: role === "student" ? uppercaseUsername : usernameRaw,
-                    role,
-                    rollNumber,
-                    approverId,
-                    approverName: profile.name || "",
-                    hostelName: profile.hostelName || "",
-                    displayName: profile.name || usernameRaw
-                }));
-                window.location.href = redirect;
-            } else {
-                errEl.textContent = "Invalid credentials for selected role.";
+                const session = json.session || {};
+                sessionStorage.setItem("loggedInUser", JSON.stringify(session));
+                window.location.href = json.redirect || "/index.html";
+            } catch (error) {
+                console.error("Login failed:", error);
+                errEl.textContent = "Network error. Please try again.";
                 errEl.style.display = "block";
             }
+
             return false;
         }
     </script>

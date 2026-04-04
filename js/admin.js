@@ -10,33 +10,59 @@
     let students = [];
     let editingRoll = null;
     let hostelMapping = new Map();
+    let approversByRole = { warden: [], fa: [] };
+    let currentApproverRole = "warden";
+    let approverSearchQuery = "";
+    let pendingDelete = null;
     let currentPage = 1;
 
     const tableView = document.getElementById("tableView");
     const formView = document.getElementById("formView");
+    const approversView = document.getElementById("approversView");
+    const approverFormView = document.getElementById("approverFormView");
     const formTitle = document.getElementById("formTitle");
+    const approverFormTitle = document.getElementById("approverFormTitle");
     const studentForm = document.getElementById("studentForm");
+    const approverForm = document.getElementById("approverForm");
     const masterBody = document.getElementById("masterTableBody");
+    const approverBody = document.getElementById("approverTableBody");
     const searchInput = document.getElementById("searchInput");
+    const approverSearchInput = document.getElementById("approverSearchInput");
     const noResults = document.getElementById("noResults");
+    const approverNoResults = document.getElementById("approverNoResults");
     const formError = document.getElementById("formError");
     const formSuccess = document.getElementById("formSuccess");
+    const approverFormError = document.getElementById("approverFormError");
+    const approverFormSuccess = document.getElementById("approverFormSuccess");
     const deleteModal = document.getElementById("deleteModal");
     const deleteRollLabel = document.getElementById("deleteRollLabel");
     const paginationContainer = document.getElementById("paginationContainer");
     const btnPrevPage = document.getElementById("btnPrevPage");
     const btnNextPage = document.getElementById("btnNextPage");
     const pageInfo = document.getElementById("pageInfo");
+    const dashboard = document.querySelector(".dashboard");
+    const sidebar = document.querySelector(".sidebar");
+    const menuToggle = document.getElementById("menuToggle");
 
     const statTotal = document.getElementById("statTotal");
     const statHostels = document.getElementById("statHostels");
     const statBranches = document.getElementById("statBranches");
+    const statWardens = document.getElementById("statWardens");
+    const statFas = document.getElementById("statFas");
+    const statApproverType = document.getElementById("statApproverType");
 
     const fHostelName = document.getElementById("fHostelName");
     const fWarden = document.getElementById("fWarden");
     const fRollNumber = document.getElementById("fRollNumber");
     const fBranch = document.getElementById("fBranch");
     const fMessName = document.getElementById("fMessName");
+    const fFa = document.getElementById("fFa");
+    const aRole = document.getElementById("aRole");
+    const aId = document.getElementById("aId");
+    const aName = document.getElementById("aName");
+    const aHostelName = document.getElementById("aHostelName");
+    const aHostelGroup = document.getElementById("aHostelGroup");
+    const aPassword = document.getElementById("aPassword");
 
     const session = getAdminSession();
     if (!session) {
@@ -61,15 +87,51 @@
         e.preventDefault();
         openAdd();
     });
+    document.getElementById("navApprovers").addEventListener("click", (e) => {
+        e.preventDefault();
+        showApproversTable();
+    });
     document.getElementById("btnAddFromTable").addEventListener("click", openAdd);
     document.getElementById("btnBack").addEventListener("click", showTable);
     document.getElementById("btnCancel").addEventListener("click", showTable);
+    document.getElementById("btnAddApprover").addEventListener("click", openAddApprover);
+    document.getElementById("btnApproverBack").addEventListener("click", showApproversTable);
+    document.getElementById("btnApproverCancel").addEventListener("click", showApproversTable);
     document.getElementById("btnCancelDelete").addEventListener("click", () => {
         deleteModal.style.display = "none";
     });
     document.getElementById("btnConfirmDelete").addEventListener("click", confirmDelete);
     btnPrevPage.addEventListener("click", () => changePage(-1));
     btnNextPage.addEventListener("click", () => changePage(1));
+    if (menuToggle) {
+        menuToggle.addEventListener("click", () => {
+            const shouldOpen = !dashboard.classList.contains("sidebar-open");
+            setSidebarOpen(shouldOpen);
+        });
+    }
+    if (dashboard) {
+        dashboard.addEventListener("click", (e) => {
+            if (!isMobileViewport()) return;
+            if (!dashboard.classList.contains("sidebar-open")) return;
+            if (!sidebar || sidebar.contains(e.target) || (menuToggle && menuToggle.contains(e.target))) return;
+            setSidebarOpen(false);
+        });
+    }
+    window.addEventListener("resize", () => {
+        if (!isMobileViewport()) {
+            setSidebarOpen(false);
+        }
+    });
+    if (approverSearchInput) {
+        approverSearchInput.addEventListener("input", () => {
+            approverSearchQuery = approverSearchInput.value.trim().toLowerCase();
+            renderApproverTable();
+        });
+    }
+    document.getElementById("btnWardenApprovers").addEventListener("click", () => setApproverRole("warden"));
+    document.getElementById("btnFaApprovers").addEventListener("click", () => setApproverRole("fa"));
+    if (approverForm) approverForm.addEventListener("submit", handleApproverSubmit);
+    if (aRole) aRole.addEventListener("change", () => syncApproverFormFields());
 
     searchInput.addEventListener("input", () => {
         currentPage = 1;
@@ -86,6 +148,7 @@
 
     async function init() {
         await loadHostelMappings();
+        await loadApproverData();
         await fetchStudents();
     }
 
@@ -234,10 +297,13 @@
 
     function showTable() {
         formView.style.display = "none";
+        approversView.style.display = "none";
+        approverFormView.style.display = "none";
         tableView.style.display = "block";
         deleteModal.style.display = "none";
         setActiveNav("navStudents");
         fetchStudents();
+        setSidebarOpen(false);
     }
 
     function openAdd() {
@@ -249,7 +315,9 @@
         tableView.style.display = "none";
         formView.style.display = "block";
         setActiveNav("navAddNew");
+        renderFacultyAdvisorOptions();
         updateWardenFieldFromHostel();
+        setSidebarOpen(false);
     }
 
     function openEdit(rollNumber) {
@@ -270,9 +338,15 @@
 
         for (const field of fields) {
             const el = document.getElementById("f" + capitalize(field));
-            if (el) el.value = student[field] ?? "";
+            if (!el) continue;
+            if (field === "fa") {
+                el.value = student.faId || student.fa || "";
+            } else {
+                el.value = student[field] ?? "";
+            }
         }
 
+        renderFacultyAdvisorOptions(student.faId || student.fa || "");
         updateWardenFieldFromHostel();
         updateMessFromHostel();
 
@@ -310,38 +384,57 @@
             }
 
             showFormSuccess(editingRoll ? "Student updated successfully" : "Student added successfully");
+            await loadApproverData();
             setTimeout(() => showTable(), 900);
         } catch {
             showFormError("Network error. Please try again.");
         }
     });
 
-    let pendingDeleteRoll = null;
-
     function openDeleteConfirm(rollNumber) {
-        pendingDeleteRoll = rollNumber;
+        pendingDelete = { type: "student", id: rollNumber, label: rollNumber };
         deleteRollLabel.textContent = rollNumber;
         deleteModal.style.display = "flex";
     }
 
     async function confirmDelete() {
-        if (!pendingDeleteRoll) return;
+        if (!pendingDelete) return;
         try {
-            const res = await fetch(`${API_BASE}/${encodeURIComponent(pendingDeleteRoll)}`, {
-                method: "DELETE",
-                headers: buildApiHeaders()
-            });
+            const target = pendingDelete;
+            let url = "";
+            let method = "DELETE";
+
+            if (target.type === "student") {
+                url = `${API_BASE}/${encodeURIComponent(target.id)}`;
+            } else if (target.type === "approver") {
+                url = `/api/approvers/${encodeURIComponent(target.role)}/${encodeURIComponent(target.id)}`;
+            }
+
+            const res = await fetch(url, { method, headers: buildApiHeaders() });
             const json = await res.json();
             if (!res.ok) {
-                showFormError(json.error || "Failed to delete");
+                if (target.type === "student") {
+                    showFormError(json.error || "Failed to delete");
+                } else {
+                    showApproverFormError(json.error || "Failed to delete approver");
+                }
                 deleteModal.style.display = "none";
                 return;
             }
             deleteModal.style.display = "none";
-            pendingDeleteRoll = null;
-            fetchStudents();
+            pendingDelete = null;
+            if (target.type === "student") {
+                fetchStudents();
+            } else {
+                await loadApproverData();
+                showApproversTable();
+            }
         } catch {
-            showFormError("Network error while deleting student");
+            if (pendingDelete && pendingDelete.type === "student") {
+                showFormError("Network error while deleting student");
+            } else {
+                showApproverFormError("Network error while deleting approver");
+            }
             deleteModal.style.display = "none";
         }
     }
@@ -411,6 +504,11 @@
             const el = document.getElementById("f" + capitalize(field));
             if (el) data[field] = el.value.trim();
         }
+        if (fFa) {
+            const selected = fFa.selectedOptions && fFa.selectedOptions[0];
+            data.faId = fFa.value.trim();
+            data.fa = selected ? (selected.dataset.name || selected.textContent.trim() || fFa.value.trim()) : fFa.value.trim();
+        }
         if (data.year) data.year = Number(data.year);
         if (data.semester) data.semester = Number(data.semester);
         return data;
@@ -466,6 +564,11 @@
         return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
     }
 
+    function normalizeApproverRole(role) {
+        const normalized = String(role || "").trim().toLowerCase();
+        return normalized === "fa" || normalized === "warden" ? normalized : "";
+    }
+
     function setFieldError(id, msg) {
         const el = document.getElementById(id);
         if (el) el.textContent = msg;
@@ -479,10 +582,24 @@
         formSuccess.style.display = "none";
     }
 
+    function clearApproverErrors() {
+        if (approverFormError) approverFormError.style.display = "none";
+        if (approverFormSuccess) approverFormSuccess.style.display = "none";
+        if (approverFormError) approverFormError.textContent = "";
+        if (approverFormSuccess) approverFormSuccess.textContent = "";
+    }
+
     function showFormError(msg) {
         formError.textContent = msg;
         formError.style.display = "block";
         formSuccess.style.display = "none";
+    }
+
+    function showApproverFormError(msg) {
+        if (!approverFormError) return;
+        approverFormError.textContent = msg;
+        approverFormError.style.display = "block";
+        if (approverFormSuccess) approverFormSuccess.style.display = "none";
     }
 
     function showFormSuccess(msg) {
@@ -491,8 +608,234 @@
         formError.style.display = "none";
     }
 
+    function showApproverFormSuccess(msg) {
+        if (!approverFormSuccess) return;
+        approverFormSuccess.textContent = msg;
+        approverFormSuccess.style.display = "block";
+        if (approverFormError) approverFormError.style.display = "none";
+    }
+
     function setActiveNav(id) {
         document.querySelectorAll(".sidebar nav a").forEach((a) => a.classList.remove("active"));
         document.getElementById(id).classList.add("active");
+    }
+
+    function approverRoleLabel(role) {
+        return role === "fa" ? "Faculty Advisor" : "Warden";
+    }
+
+    function getApproverList(role) {
+        return approversByRole[role] || [];
+    }
+
+    function updateApproverStats() {
+        if (statWardens) statWardens.textContent = String(getApproverList("warden").length);
+        if (statFas) statFas.textContent = String(getApproverList("fa").length);
+        if (statApproverType) statApproverType.textContent = approverRoleLabel(currentApproverRole);
+    }
+
+    function updateApproverTabs() {
+        const wardenBtn = document.getElementById("btnWardenApprovers");
+        const faBtn = document.getElementById("btnFaApprovers");
+        if (wardenBtn) wardenBtn.classList.toggle("active", currentApproverRole === "warden");
+        if (faBtn) faBtn.classList.toggle("active", currentApproverRole === "fa");
+        updateApproverStats();
+    }
+
+    function setApproverRole(role) {
+        const normalized = role === "fa" ? "fa" : "warden";
+        currentApproverRole = normalized;
+        approverSearchQuery = "";
+        if (approverSearchInput) approverSearchInput.value = "";
+        updateApproverTabs();
+        renderApproverTable();
+    }
+
+    function showApproversTable() {
+        tableView.style.display = "none";
+        formView.style.display = "none";
+        approverFormView.style.display = "none";
+        approversView.style.display = "block";
+        deleteModal.style.display = "none";
+        setActiveNav("navApprovers");
+        updateApproverTabs();
+        renderApproverTable();
+        setSidebarOpen(false);
+    }
+
+    function isMobileViewport() {
+        return window.matchMedia("(max-width: 900px)").matches;
+    }
+
+    function setSidebarOpen(open) {
+        if (!dashboard || !menuToggle) return;
+        const shouldOpen = Boolean(open) && isMobileViewport();
+        dashboard.classList.toggle("sidebar-open", shouldOpen);
+        menuToggle.setAttribute("aria-expanded", String(shouldOpen));
+    }
+
+    function openAddApprover() {
+        editingRoll = null;
+        clearApproverErrors();
+        if (approverForm) approverForm.reset();
+        if (aRole) aRole.value = currentApproverRole;
+        if (aId) aId.disabled = false;
+        if (approverFormTitle) approverFormTitle.textContent = "Add New Approver";
+        syncApproverFormFields();
+        tableView.style.display = "none";
+        formView.style.display = "none";
+        approversView.style.display = "none";
+        approverFormView.style.display = "block";
+        setActiveNav("navApprovers");
+    }
+
+    function renderFacultyAdvisorOptions(selectedValue = "") {
+        if (!fFa) return;
+        const fas = getApproverList("fa");
+        const desired = String(selectedValue || "").trim();
+        const options = ['<option value="">Select Faculty Advisor</option>'];
+
+        fas.forEach((fa) => {
+            const label = `${fa.name} (${fa.id})`;
+            options.push(`<option value="${esc(fa.id)}" data-name="${esc(fa.name)}">${esc(label)}</option>`);
+        });
+
+        fFa.innerHTML = options.join("");
+
+        if (desired) {
+            const exact = Array.from(fFa.options).find((opt) => opt.value === desired || opt.dataset.name === desired || opt.textContent.includes(desired));
+            if (exact) fFa.value = exact.value;
+        }
+    }
+
+    function getFilteredApprovers() {
+        const list = getApproverList(currentApproverRole);
+        if (!approverSearchQuery) return list;
+        return list.filter((item) => {
+            return [item.id, item.name].join(" ").toLowerCase().includes(approverSearchQuery);
+        });
+    }
+
+    function renderApproverTable() {
+        if (!approverBody) return;
+        updateApproverTabs();
+
+        const rows = getFilteredApprovers();
+        if (!rows.length) {
+            approverBody.innerHTML = "";
+            if (approverNoResults) approverNoResults.style.display = "block";
+            return;
+        }
+
+        if (approverNoResults) approverNoResults.style.display = "none";
+        approverBody.innerHTML = rows.map((item) => `
+            <tr>
+                <td><span class="approver-type-badge">${esc(approverRoleLabel(item.role))}</span></td>
+                <td>${esc(item.id)}</td>
+                <td>${esc(item.name)}</td>
+                <td>${esc(item.role === "warden" ? (item.hostelName || "") : "")}</td>
+                <td class="actions-cell">
+                    <button class="btn-icon btn-delete" title="Delete" data-role="${esc(item.role)}" data-id="${esc(item.id)}" data-name="${esc(item.name)}"><i class="fa-solid fa-trash"></i></button>
+                </td>
+            </tr>
+        `).join("");
+
+        approverBody.querySelectorAll(".btn-delete").forEach((btn) => {
+            btn.addEventListener("click", () => {
+                openDeleteApproverConfirm(btn.dataset.role, btn.dataset.id, btn.dataset.name);
+            });
+        });
+    }
+
+    async function loadApproverData() {
+        try {
+            const [wardenRes, faRes] = await Promise.all([
+                fetch(`/api/approvers?role=warden`, { headers: buildApiHeaders() }),
+                fetch(`/api/approvers?role=fa`, { headers: buildApiHeaders() })
+            ]);
+
+            if (!wardenRes.ok) throw new Error("Failed to load warden approvers");
+            if (!faRes.ok) throw new Error("Failed to load FA approvers");
+
+            approversByRole = {
+                warden: await wardenRes.json(),
+                fa: await faRes.json()
+            };
+
+            updateApproverTabs();
+            renderFacultyAdvisorOptions();
+            if (approversView && approversView.style.display !== "none") {
+                renderApproverTable();
+            }
+        } catch (err) {
+            console.error("Failed to load approvers", err);
+        }
+    }
+
+    function openDeleteApproverConfirm(role, id, name) {
+        pendingDelete = {
+            type: "approver",
+            role,
+            id,
+            label: `${name} (${id})`
+        };
+        deleteRollLabel.textContent = pendingDelete.label;
+        deleteModal.style.display = "flex";
+    }
+
+    async function handleApproverSubmit(e) {
+        e.preventDefault();
+        clearApproverErrors();
+
+        const role = normalizeApproverRole(aRole && aRole.value);
+        const id = aId ? aId.value.trim() : "";
+        const name = aName ? aName.value.trim() : "";
+        const hostelName = aHostelName ? aHostelName.value.trim() : "";
+        const password = aPassword ? aPassword.value.trim() : "";
+
+        if (!role) return showApproverFormError("Role is required");
+        if (!id) return showApproverFormError("ID is required");
+        if (!name) return showApproverFormError("Name is required");
+        if (role === "warden" && !hostelName) return showApproverFormError("Hostel is required for warden");
+        if (!password) return showApproverFormError("Password is required");
+
+        try {
+            const res = await fetch("/api/approvers", {
+                method: "POST",
+                headers: buildApiHeaders(),
+                body: JSON.stringify({ role, id, name, password, hostelName: role === "warden" ? hostelName : "" })
+            });
+            const json = await res.json();
+            if (!res.ok) {
+                showApproverFormError(json.error || "Server error");
+                return;
+            }
+
+            showApproverFormSuccess(`${approverRoleLabel(role)} saved successfully`);
+            await loadApproverData();
+            if (approverForm) approverForm.reset();
+            if (aRole) aRole.value = role;
+            if (aId) aId.disabled = false;
+            syncApproverFormFields();
+            setTimeout(() => showApproversTable(), 900);
+        } catch {
+            showApproverFormError("Network error. Please try again.");
+        }
+    }
+
+    function syncApproverFormFields() {
+        const role = normalizeApproverRole(aRole && aRole.value) || currentApproverRole;
+        const isWarden = role === "warden";
+
+        if (aHostelGroup) {
+            aHostelGroup.style.display = isWarden ? "block" : "none";
+        }
+        if (aHostelName) {
+            aHostelName.required = isWarden;
+            if (!isWarden) aHostelName.value = "";
+        }
+        if (!isWarden && aRole) {
+            aRole.value = role;
+        }
     }
 })();

@@ -123,6 +123,24 @@ body {
     flex-shrink: 0;
 }
 
+.menu-toggle {
+    display: none;
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 16px;
+    align-items: center;
+    justify-content: center;
+}
+
+.menu-toggle:hover {
+    background: rgba(255, 255, 255, 0.1);
+}
+
 .topbar h3 {
     font-size: 16px;
     font-weight: 600;
@@ -160,6 +178,23 @@ body {
 
 .search-box input::placeholder {
     color: var(--muted);
+}
+
+.approver-tabs {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.approver-tab {
+    min-width: 140px;
+}
+
+.approver-tab.active {
+    background: linear-gradient(135deg, var(--purple), var(--pink));
+    color: white;
+    border-color: transparent;
+    box-shadow: 0 6px 20px rgba(219, 31, 255, 0.35);
 }
 
 .profile {
@@ -580,38 +615,64 @@ legend {
 /* ── Responsive ── */
 @media (max-width: 900px) {
     .dashboard {
-        flex-direction: column;
+        padding: 12px;
+        gap: 12px;
+    }
+    .SMD{
+        display: none;
+    }
+    .sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        z-index: 1200;
+        width: min(280px, 82vw);
+        height: 100vh;
+        border-radius: 0 18px 18px 0;
+        padding: 18px;
+        transform: translateX(-105%);
+        transition: transform 0.25s ease;
     }
 
-    .sidebar {
-        width: 100%;
-        height: auto;
-        flex-direction: row;
-        align-items: center;
-        padding: 12px 18px;
-        gap: 12px;
-        border-radius: 14px;
+    .dashboard.sidebar-open .sidebar {
+        transform: translateX(0);
+    }
+
+    .dashboard.sidebar-open::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 1100;
     }
 
     .logo {
-        max-width: 40px;
-        margin-bottom: 0;
+        max-width: 130px;
+        margin-bottom: 24px;
     }
 
     .sidebar nav {
-        display: flex;
-        gap: 6px;
-    }
-
-    .sidebar nav a {
-        padding: 8px 12px;
-        margin-bottom: 0;
-        font-size: 13px;
+        display: block;
     }
 
     .logout {
-        margin-top: 0;
-        margin-left: auto;
+        margin-top: auto;
+        margin-left: 0;
+    }
+
+    .menu-toggle {
+        display: inline-flex;
+    }
+
+    .topbar {
+        height: auto;
+        min-height: 58px;
+        padding: 10px 14px;
+        gap: 10px;
+    }
+
+    .topbar h3 {
+        font-size: 14px;
     }
 
     .cards {
