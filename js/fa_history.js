@@ -52,11 +52,101 @@ let currentFilter = "all";
 let currentPage = 1;
 const PAGE_SIZE = 10;
 
+let faSession = {
+    approverId: "",
+    approverName: "Faculty Advisor"
+};
+
+    let messConstraints = {
+        minDaysForRefund: 3,
+        amountPerDay: 200
+    };
+
+const FA_PROFILES = {
+    BS101: { name: "Bharat Soni" },
+    P101: { name: "Pradhan" },
+    JT101: { name: "Jhanvi" },
+    PS101: { name: "Priyanka" },
+    NBV101: { name: "Natesh" }
+};
+
+function looksLikeFaId(value) {
+    const text = String(value || "").trim().toUpperCase();
+    return /^[A-Z]{2,4}\d{3,4}$/.test(text) || /^[A-Z]{2,4}\d{2}[A-Z]\d{3,4}$/.test(text);
+}
+
+function getLoggedInFaSession() {
+    try {
+        const raw = sessionStorage.getItem("loggedInUser");
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (!parsed || parsed.role !== "fa") return null;
+        return parsed;
+    } catch {
+        return null;
+    }
+}
+
+function resolveFaSession(session) {
+    const approverId = String((session && (session.approverId || session.username)) || "").trim().toUpperCase();
+    const profile = FA_PROFILES[approverId] || {};
+    const rawName = String((session && (session.approverName || session.displayName)) || "").trim();
+    const rawNameIsId = looksLikeFaId(rawName) || (approverId && rawName.toUpperCase() === approverId);
+    const approverName = (rawName && !rawNameIsId) ? rawName : (profile.name || approverId || "Faculty Advisor");
+
+    return { approverId, approverName };
+}
+
+function apiHeaders() {
+    const apiKey = String(sessionStorage.getItem("apiAccessKey") || localStorage.getItem("apiAccessKey") || "change-me").trim();
+    const headers = { "x-user-role": "fa" };
+    if (apiKey) headers["x-api-key"] = apiKey;
+    if (faSession.approverId) headers["x-user-id"] = faSession.approverId;
+    if (faSession.approverName) headers["x-user-name"] = faSession.approverName;
+    return headers;
+}
+
+    function getRefundRuleForItem(item) {
+        const minDays = Number(item && item.refundRuleMinDays);
+        const amountPerDay = Number(item && item.refundRuleAmountPerDay);
+        return {
+            minDaysForRefund: Number.isFinite(minDays) && minDays >= 0 ? minDays : 3,
+            amountPerDay: Number.isFinite(amountPerDay) && amountPerDay >= 0 ? amountPerDay : 200
+        };
+    }
+
+    function loadMessConstraints() {
+        fetch("/api/mess-constraints", { headers: apiHeaders() })
+            .then(res => {
+                if (!res.ok) throw new Error("Failed to load constraints");
+                return res.json();
+            })
+            .then(data => {
+                if (data && typeof data === "object") {
+                    messConstraints = {
+                        minDaysForRefund: Number(data.minDaysForRefund) || 3,
+                        amountPerDay: Number(data.amountPerDay) || 200
+                    };
+                }
+            })
+            .catch(err => {
+                console.error("Error loading mess constraints (using defaults):", err);
+                messConstraints = { minDaysForRefund: 3, amountPerDay: 200 };
+            });
+    }
+
 // ===== Load Data =====
 document.addEventListener("DOMContentLoaded", function () {
     const historyTableBody = document.getElementById("historyTableBody");
+    const session = getLoggedInFaSession();
 
-    fetch("/api/leave-requests")
+    if (session) {
+        faSession = resolveFaSession(session);
+    }
+
+        loadMessConstraints();
+
+    fetch("/api/leave-requests", { headers: apiHeaders() })
         .then(res => {
             if (!res.ok) throw new Error("Failed to load leave requests");
             return res.json();
@@ -245,9 +335,14 @@ function populateModal(item) {
     if (!item) return;
     const totalDays = Number(item.totalDays) || 0;
     const isApproved = item.status === "Approved";
-    const refundAmount = (isApproved && totalDays > 3) ? 200 * totalDays : 0;
+        const rule = getRefundRuleForItem(item);
+        const refundAmount = (isApproved && totalDays > rule.minDaysForRefund)
+            ? rule.amountPerDay * totalDays
+            : 0;
     const refundLabel = isApproved
-        ? (totalDays > 3 ? `₹${refundAmount} (${item.refundStatus || 'Processing'})` : "₹0 — No Refund")
+            ? (totalDays > rule.minDaysForRefund
+                ? `₹${refundAmount} (${item.refundStatus || 'Processing'})`
+                : "₹0 — No Refund")
         : "₹0 — No Refund";
 
     const faApprovalStatus = isApproved ? "Approved" : (item.faApproval === "Rejected" ? "Rejected" : "Pending");

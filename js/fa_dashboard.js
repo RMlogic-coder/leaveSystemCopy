@@ -56,6 +56,11 @@ let faSession = {
     role: "fa"
 };
 
+    let messConstraints = {
+        minDaysForRefund: 3,
+        amountPerDay: 200
+    };
+
 const FA_PROFILES = {
     BS101: { name: "Bharat Soni" },
     P101: { name: "Pradhan" },
@@ -88,6 +93,15 @@ function getRequestSourceIndex(item, fallbackIndex) {
     const sourceIndex = Number(item && item.sourceIndex);
     return Number.isInteger(sourceIndex) && sourceIndex >= 0 ? sourceIndex : fallbackIndex;
 }
+
+    function getRefundRuleForItem(item) {
+        const minDays = Number(item && item.refundRuleMinDays);
+        const amountPerDay = Number(item && item.refundRuleAmountPerDay);
+        return {
+            minDaysForRefund: Number.isFinite(minDays) && minDays >= 0 ? minDays : 3,
+            amountPerDay: Number.isFinite(amountPerDay) && amountPerDay >= 0 ? amountPerDay : 200
+        };
+    }
 
 function parseApiResponse(response) {
     return response
@@ -123,6 +137,26 @@ function getLoggedInFaSession() {
     }
 }
 
+    function loadMessConstraints() {
+        fetch("/api/mess-constraints", { headers: apiHeaders() })
+            .then(res => {
+                if (!res.ok) throw new Error("Failed to load constraints");
+                return res.json();
+            })
+            .then(data => {
+                if (data && typeof data === "object") {
+                    messConstraints = {
+                        minDaysForRefund: Number(data.minDaysForRefund) || 3,
+                        amountPerDay: Number(data.amountPerDay) || 200
+                    };
+                }
+            })
+            .catch(err => {
+                console.error("Error loading mess constraints (using defaults):", err);
+                messConstraints = { minDaysForRefund: 3, amountPerDay: 200 };
+            });
+    }
+
 function looksLikeFaId(value) {
     const text = String(value || "").trim().toUpperCase();
     return /^[A-Z]{2,4}\d{3,4}$/.test(text) || /^[A-Z]{2,4}\d{2}[A-Z]\d{3,4}$/.test(text);
@@ -150,12 +184,20 @@ function updateFaIdentity() {
     if (faRole) faRole.textContent = "Faculty Advisor";
 }
 
+function getActiveFaLabel() {
+    const name = String(faSession.approverName || "Faculty Advisor").trim() || "Faculty Advisor";
+    const id = String(faSession.approverId || "").trim().toUpperCase();
+    return id ? `${name} (${id})` : name;
+}
+
 function apiHeaders(includeJsonContentType = false) {
     const headers = {};
+    const apiKey = String(sessionStorage.getItem("apiAccessKey") || localStorage.getItem("apiAccessKey") || "change-me").trim();
     if (includeJsonContentType) headers["Content-Type"] = "application/json";
     if (faSession.approverId) headers["x-user-id"] = faSession.approverId;
     if (faSession.approverName) headers["x-user-name"] = faSession.approverName;
     headers["x-user-role"] = "fa";
+    if (apiKey) headers["x-api-key"] = apiKey;
     return headers;
 }
 
@@ -246,6 +288,7 @@ document.addEventListener("DOMContentLoaded", function () {
     updateFaIdentity();
 
     loadFaStudentCount();
+        loadMessConstraints(); // Call the new function to load mess constraints
 
     if (addTestRowsBtn) {
         addTestRowsBtn.addEventListener("click", function () {
@@ -293,8 +336,11 @@ function renderTable() {
         tbody.innerHTML = `
             <tr>
                 <td colspan="8" style="text-align:center; color:var(--muted); padding:30px;">
-                    <i class="fa-solid fa-check-circle" style="font-size:24px; color:#00c853; margin-bottom:8px; display:block;"></i>
-                    No pending leave requests. All caught up!
+                    <i class="fa-solid fa-inbox" style="font-size:24px; color:#00c853; margin-bottom:8px; display:block;"></i>
+                    <div style="font-weight:600; color:var(--text); margin-bottom:6px;">No pending leave requests for ${esc(getActiveFaLabel())}.</div>
+                    <div style="max-width:420px; margin:0 auto; line-height:1.5;">
+                        This dashboard only shows requests assigned to the active Faculty Advisor after warden forwarding.
+                    </div>
                 </td>
             </tr>
         `;
@@ -350,13 +396,14 @@ function acceptRequest(index) {
     const requestIndex = getRequestSourceIndex(item, index);
 
     const totalDays = Number(item.totalDays) || 0;
+        const rule = getRefundRuleForItem(item);
 
     // Save old state for rollback
     const prev = { status: item.status, faApproval: item.faApproval, refundStatus: item.refundStatus };
 
     item.status = "Approved";
     item.faApproval = "Approved";
-    item.refundStatus = totalDays > 3 ? "Processing" : "No Refund";
+        item.refundStatus = totalDays > rule.minDaysForRefund ? "Processing" : "No Refund";
 
     renderTable();
     updatePendingCount();
@@ -464,12 +511,17 @@ function populateModal(index) {
     if (!item) return;
     const isPending = isPendingFA(item);
     const totalDays = Number(item.totalDays) || 0;
+        const rule = getRefundRuleForItem(item);
 
     // Calculate refund amount
     const isApproved = normStatus(item.status) === "approved";
-    const refundAmount = (isApproved && totalDays > 3) ? 200 * totalDays : 0;
+        const refundAmount = (isApproved && totalDays > rule.minDaysForRefund)
+            ? rule.amountPerDay * totalDays
+            : 0;
     const refundLabel = isApproved
-        ? (totalDays > 3 ? `₹${refundAmount} (${esc(field(item, "refundStatus", "Processing"))})` : "₹0 — No Refund")
+            ? (totalDays > rule.minDaysForRefund
+                ? `₹${refundAmount} (${esc(field(item, "refundStatus", "Processing"))})`
+                : "₹0 — No Refund")
         : (isPending ? "Awaiting Approval" : "₹0 — No Refund");
 
     // Build badge helper

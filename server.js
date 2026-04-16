@@ -1,13 +1,18 @@
 const express = require("express");
-const fs = require("fs");
 const path = require("path");
 require("dotenv").config();
 const { initializeFirebaseAdmin, isFirebaseReady, readFromFirebase, writeToFirebase } = require("./firebaseAdmin");
+const { isConfigured: isPostgresConfigured, readStore: readPostgresStore, writeStore: writePostgresStore, healthCheck: postgresHealthCheck } = require("./db/postgresStore");
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const AUTH_ENABLED = process.env.AUTH_ENABLED === "true";
 const API_ACCESS_KEY = process.env.API_ACCESS_KEY || "";
+const DB_MODE = String(process.env.DB_MODE || "firebase").trim().toLowerCase();
+const SUPPORTED_DB_MODES = ["firebase", "postgres", "postgres_firebase_mirror"];
+const USE_POSTGRES_PRIMARY = DB_MODE === "postgres" || DB_MODE === "postgres_firebase_mirror";
+const USE_FIREBASE_PRIMARY = DB_MODE === "firebase";
+const USE_FIREBASE_MIRROR_WRITE = DB_MODE === "postgres_firebase_mirror";
 
 const DATA_FILE = path.join(__dirname, "data", "fa_leave_requests.json");
 const WARDEN_LEAVE_FILE = path.join(__dirname, "data", "warden_leave_requests.json");
@@ -15,6 +20,7 @@ const WARDEN_STUDENTS_FILE = path.join(__dirname, "data", "warden_students.json"
 const STUDENT_LEAVE_FILE = path.join(__dirname, "data", "leave_data.json");
 const STUDENT_MASTER_FILE = path.join(__dirname, "data", "student_master.json");
 const MESS_RATES_FILE = path.join(__dirname, "data", "mess_semester_rates.json");
+const MESS_CONSTRAINTS_FILE = path.join(__dirname, "data", "mess_constraints.json");
 const HOSTEL_WARDEN_FILE = path.join(__dirname, "data", "hostel_warden_mapping.json");
 const CREDENTIALS_FILE = path.join(__dirname, "data", "credentials.json");
 const FIREBASE_NODE_BY_FILE = {
@@ -25,6 +31,7 @@ const FIREBASE_NODE_BY_FILE = {
     [path.basename(STUDENT_LEAVE_FILE)]: "leave_data",
     [path.basename(STUDENT_MASTER_FILE)]: "student_master",
     [path.basename(MESS_RATES_FILE)]: "mess_semester_rates",
+    [path.basename(MESS_CONSTRAINTS_FILE)]: "mess_constraints",
     [path.basename(HOSTEL_WARDEN_FILE)]: "hostel_warden_mapping"
 };
 
@@ -39,6 +46,7 @@ const ALLOWED_RATE_PERIODS = ["even2026", "odd2026", "even2025", "odd2025"];
 const ALLOWED_ROLES = ["admin", "fa", "warden", "mess", "student"];
 
 const ROUTE_ROLE_RULES = [
+    { method: "GET", path: "/api/health/db", roles: ["admin", "fa", "warden", "mess", "student"] },
     { method: "GET", path: "/api/student-master", roles: ["admin", "fa", "warden"] },
     { method: "GET", path: "/api/student-master/:rollNumber", roles: ["admin", "fa", "warden", "student"] },
     { method: "PUT", path: "/api/student-master/:rollNumber", roles: ["admin"] },
@@ -62,6 +70,9 @@ const ROUTE_ROLE_RULES = [
     { method: "GET", path: "/api/mess-refunds", roles: ["mess", "admin"] },
     { method: "POST", path: "/api/mess-update-refund", roles: ["mess", "admin"] },
 
+        { method: "GET", path: "/api/mess-constraints", roles: ["mess", "admin", "student"] },
+        { method: "POST", path: "/api/mess-constraints", roles: ["mess", "admin"] },
+
     { method: "GET", path: "/api/student-leaves", roles: ["student", "fa", "warden", "admin"] },
     { method: "POST", path: "/api/submit-leave", roles: ["student"] }
 ];
@@ -78,10 +89,26 @@ app.use((req, res, next) => {
 
 app.use(express.static(__dirname));
 
-initializeFirebaseAdmin();
-if (!isFirebaseReady()) {
-    console.error("[firebase] Firebase Admin is required but not initialized. Check FIREBASE_ENABLED, FIREBASE_DB_URL, and service account credentials.");
+if (!SUPPORTED_DB_MODES.includes(DB_MODE)) {
+    console.error(`[storage] Invalid DB_MODE=${DB_MODE}. Expected one of: ${SUPPORTED_DB_MODES.join(", ")}`);
     process.exit(1);
+}
+
+if (USE_POSTGRES_PRIMARY && !isPostgresConfigured()) {
+    console.error("[storage] DATABASE_URL is required when DB_MODE uses PostgreSQL.");
+    process.exit(1);
+}
+
+if (USE_FIREBASE_PRIMARY || USE_FIREBASE_MIRROR_WRITE) {
+    initializeFirebaseAdmin();
+    if (!isFirebaseReady()) {
+        if (USE_FIREBASE_PRIMARY) {
+            console.error("[firebase] Firebase Admin is required but not initialized. Check FIREBASE_ENABLED, FIREBASE_DB_URL, and service account credentials.");
+            process.exit(1);
+        } else {
+            console.warn("[firebase] Firebase mirror is enabled but initialization failed. Writes will continue on PostgreSQL only.");
+        }
+    }
 }
 
 function pathMatchesTemplate(actualPath, templatePath) {
@@ -188,22 +215,6 @@ function deriveLastName(fullName) {
     return parts.length ? parts[parts.length - 1] : "Student";
 }
 
-function readJsonFile(filePath) {
-    if (!fs.existsSync(filePath)) {
-        return { data: null, error: `File not found: ${path.basename(filePath)}` };
-    }
-    try {
-        const raw = fs.readFileSync(filePath, "utf-8");
-        const parsed = JSON.parse(raw);
-        if (!Array.isArray(parsed)) {
-            return { data: null, error: "Data file is not a valid array" };
-        }
-        return { data: parsed, error: null };
-    } catch {
-        return { data: null, error: "Failed to parse data file" };
-    }
-}
-
 async function readFirebaseNodeSafe(node) {
     if (!isFirebaseReady()) return null;
     try {
@@ -226,6 +237,19 @@ async function readFirebaseObjectSafe(node) {
 }
 
 async function readArrayStore(filePath) {
+    if (USE_POSTGRES_PRIMARY) {
+        try {
+            const storeKey = path.basename(filePath, path.extname(filePath));
+            const rows = await readPostgresStore(storeKey, []);
+            if (!Array.isArray(rows)) {
+                return { data: [], error: `PostgreSQL store ${storeKey} is not an array` };
+            }
+            return { data: rows, error: null };
+        } catch (err) {
+            return { data: [], error: `PostgreSQL read failed for ${path.basename(filePath)}: ${err.message}` };
+        }
+    }
+
     const node = FIREBASE_NODE_BY_FILE[path.basename(filePath)];
     if (!node) {
         return { data: [], error: `No Firebase node configured for ${path.basename(filePath)}` };
@@ -238,6 +262,19 @@ async function readArrayStore(filePath) {
 }
 
 async function readObjectStore(filePath, fallback = {}) {
+    if (USE_POSTGRES_PRIMARY) {
+        try {
+            const storeKey = path.basename(filePath, path.extname(filePath));
+            const obj = await readPostgresStore(storeKey, fallback);
+            if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+                return { data: fallback, error: `PostgreSQL store ${storeKey} is not an object` };
+            }
+            return { data: obj, error: null };
+        } catch (err) {
+            return { data: fallback, error: `PostgreSQL read failed for ${path.basename(filePath)}: ${err.message}` };
+        }
+    }
+
     const node = FIREBASE_NODE_BY_FILE[path.basename(filePath)];
     if (!node) {
         return { data: fallback, error: `No Firebase node configured for ${path.basename(filePath)}` };
@@ -249,7 +286,25 @@ async function readObjectStore(filePath, fallback = {}) {
     return { data: obj, error: null };
 }
 
+async function mirrorWriteToFirebase(filePath, data) {
+    if (!USE_FIREBASE_MIRROR_WRITE || !isFirebaseReady()) return;
+    const node = FIREBASE_NODE_BY_FILE[path.basename(filePath)];
+    if (!node) return;
+    try {
+        await writeToFirebase(node, data);
+    } catch (err) {
+        console.warn(`[firebase] Mirror write failed for ${node}: ${err.message}`);
+    }
+}
+
 async function writeArrayStore(filePath, data) {
+    if (USE_POSTGRES_PRIMARY) {
+        const storeKey = path.basename(filePath, path.extname(filePath));
+        await writePostgresStore(storeKey, data);
+        await mirrorWriteToFirebase(filePath, data);
+        return;
+    }
+
     const node = FIREBASE_NODE_BY_FILE[path.basename(filePath)];
     if (!node) {
         throw new Error(`No Firebase node configured for ${path.basename(filePath)}`);
@@ -258,6 +313,13 @@ async function writeArrayStore(filePath, data) {
 }
 
 async function writeObjectStore(filePath, data) {
+    if (USE_POSTGRES_PRIMARY) {
+        const storeKey = path.basename(filePath, path.extname(filePath));
+        await writePostgresStore(storeKey, data);
+        await mirrorWriteToFirebase(filePath, data);
+        return;
+    }
+
     const node = FIREBASE_NODE_BY_FILE[path.basename(filePath)];
     if (!node) {
         throw new Error(`No Firebase node configured for ${path.basename(filePath)}`);
@@ -265,55 +327,95 @@ async function writeObjectStore(filePath, data) {
     await writeToFirebase(node, data);
 }
 
-function writeJsonArrayFile(filePath, data) {
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 4) + "\n");
+// Repository-style helpers for domain stores.
+async function readFaLeaveStore() {
+    return readArrayStore(DATA_FILE);
 }
 
-function writeJsonObjectFile(filePath, data) {
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 4) + "\n");
+async function writeFaLeaveStore(rows) {
+    return writeArrayStore(DATA_FILE, rows);
 }
 
-function readJsonObjectFile(filePath, fallback = {}) {
-    if (!fs.existsSync(filePath)) {
-        return { data: fallback, error: null };
+async function readWardenLeaveStore() {
+    return readArrayStore(WARDEN_LEAVE_FILE);
+}
+
+async function writeWardenLeaveStore(rows) {
+    return writeArrayStore(WARDEN_LEAVE_FILE, rows);
+}
+
+async function readStudentLeaveStore() {
+    return readArrayStore(STUDENT_LEAVE_FILE);
+}
+
+async function writeStudentLeaveStore(rows) {
+    return writeArrayStore(STUDENT_LEAVE_FILE, rows);
+}
+
+async function readStudentMasterStore() {
+    if (USE_POSTGRES_PRIMARY) {
+        return readArrayStore(STUDENT_MASTER_FILE);
     }
-    try {
-        const raw = fs.readFileSync(filePath, "utf-8");
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-            return { data: fallback, error: null };
-        }
-        return { data: parsed, error: null };
-    } catch {
-        return { data: fallback, error: null };
+
+    if (!isFirebaseReady()) {
+        return { data: [], error: "Firebase student master store is not available" };
     }
+
+    const data = await readFirebaseArraySafe("student_master");
+    if (!data) {
+        return { data: [], error: "Failed to read student_master from Firebase" };
+    }
+
+    return { data, error: null };
+}
+
+async function writeStudentMasterStore(rows) {
+    if (USE_POSTGRES_PRIMARY) {
+        return writeArrayStore(STUDENT_MASTER_FILE, rows);
+    }
+
+    if (!isFirebaseReady()) {
+        throw new Error("Firebase student master store is not available");
+    }
+
+    await writeToFirebase("student_master", rows);
+}
+
+async function readHostelWardenStore() {
+    return readObjectStore(HOSTEL_WARDEN_FILE, {});
+}
+
+async function writeHostelWardenStore(mapping) {
+    return writeObjectStore(HOSTEL_WARDEN_FILE, mapping);
+}
+
+async function readCredentialsObjectStore() {
+    return readObjectStore(CREDENTIALS_FILE, {});
+}
+
+async function writeCredentialsObjectStore(store) {
+    return writeObjectStore(CREDENTIALS_FILE, store);
+}
+
+async function readMessRatesStore() {
+    return readObjectStore(MESS_RATES_FILE, {});
+}
+
+async function writeMessRatesStore(model) {
+    return writeObjectStore(MESS_RATES_FILE, model);
+}
+
+async function readMessConstraintsStore() {
+    return readObjectStore(MESS_CONSTRAINTS_FILE, { minDaysForRefund: 3, amountPerDay: 200 });
+}
+
+async function writeMessConstraintsStore(constraints) {
+    return writeObjectStore(MESS_CONSTRAINTS_FILE, constraints);
 }
 
 function normalizeApproverRole(role) {
     const normalized = normText(role).toLowerCase();
     return normalized === "fa" || normalized === "warden" ? normalized : "";
-}
-
-function readCredentialsStore() {
-    const { data, error } = readJsonObjectFile(CREDENTIALS_FILE, {});
-    if (error) return { data: { wardens: [], fas: [] }, error };
-
-    const normalizeRows = (rows, role) => (Array.isArray(rows) ? rows : []).map((row) => ({
-        ...row,
-        id: normIdentityId(row && row.id),
-        name: normText(row && row.name),
-        password: normText(row && row.password),
-        role: normalizeApproverRole((row && row.role) || role),
-        active: row && row.active === false ? false : true
-    }));
-
-    return {
-        data: {
-            wardens: normalizeRows(data.wardens, "warden"),
-            fas: normalizeRows(data.fas, "fa")
-        },
-        error: null
-    };
 }
 
 function normalizeCredentialsStoreData(data = {}) {
@@ -339,7 +441,7 @@ async function readCredentialsStorePrimary() {
 }
 
 async function loadStudentMasterMapPrimary() {
-    const { data, error } = await readArrayStore(STUDENT_MASTER_FILE);
+    const { data, error } = await readStudentMasterStore();
     if (error) return { map: new Map(), error };
 
     const map = new Map();
@@ -348,13 +450,6 @@ async function loadStudentMasterMapPrimary() {
         if (normalized.rollNumber) map.set(normalized.rollNumber, normalized);
     }
     return { map, error: null };
-}
-
-function writeCredentialsStore(store) {
-    writeJsonObjectFile(CREDENTIALS_FILE, {
-        wardens: Array.isArray(store.wardens) ? store.wardens : [],
-        fas: Array.isArray(store.fas) ? store.fas : []
-    });
 }
 
 function getApproverRows(store, role) {
@@ -372,7 +467,7 @@ function normalizeApproverRow(row, role) {
     };
 }
 
-function listApproversByRole(store, role, options = {}) {
+function listApproversByRole(store, role, options = {}, hostelMap = null) {
     const normalizedRole = normalizeApproverRole(role);
     if (!normalizedRole) return [];
     const activeOnly = options.activeOnly !== false;
@@ -382,7 +477,7 @@ function listApproversByRole(store, role, options = {}) {
             if (normalizedRole !== "warden" || normalized.hostelName) return normalized;
             return {
                 ...normalized,
-                hostelName: findWardenHostelById(store, normalized.id) || ""
+                hostelName: findWardenHostelById(store, normalized.id, hostelMap) || ""
             };
         })
         .filter((row) => !activeOnly || row.active !== false);
@@ -409,9 +504,8 @@ function approverExistsEverywhere(store, id) {
     return [...(store.wardens || []), ...(store.fas || [])].some((row) => normIdentityId(row && row.id) === target);
 }
 
-function findWardenHostelById(store, wardenId) {
+function findWardenHostelById(store, wardenId, hostelMap = null) {
     const target = normIdentityId(wardenId);
-    const map = loadHostelWardenMapping();
     const wardenRows = Array.isArray(store && store.wardens) ? store.wardens : [];
 
     const storedHostel = wardenRows.find((row) => normIdentityId(row && row.id) === target);
@@ -419,104 +513,11 @@ function findWardenHostelById(store, wardenId) {
         return normalizeHostelName(storedHostel.hostelName);
     }
 
+    const map = hostelMap instanceof Map ? hostelMap : new Map();
     for (const row of map.values()) {
         if (normIdentityId(row.wardenId) === target) return row.hostelName;
     }
     return "";
-}
-
-function findApproverDependencies(store, role, approver) {
-    const normalizedRole = normalizeApproverRole(role);
-    const approverId = normIdentityId(approver && approver.id);
-    const approverName = normText(approver && approver.name);
-    const studentDeps = [];
-    const mappingDeps = [];
-
-    const { map, error } = loadStudentMasterMap();
-    if (error) {
-        return { error: `Failed to read student master: ${error}`, references: [] };
-    }
-
-    for (const student of map.values()) {
-        const studentWardenId = normIdentityId(student.wardenId);
-        const studentFaId = normIdentityId(student.faId);
-        const studentWardenName = normIdentity(student.warden);
-        const studentFaName = normIdentity(student.fa);
-
-        if (normalizedRole === "warden" && (studentWardenId === approverId || (approverName && studentWardenName === normIdentity(approverName)))) {
-            studentDeps.push(student.rollNumber);
-        }
-        if (normalizedRole === "fa" && (studentFaId === approverId || (approverName && studentFaName === normIdentity(approverName)))) {
-            studentDeps.push(student.rollNumber);
-        }
-    }
-
-    if (normalizedRole === "warden") {
-        const hostelName = findWardenHostelById(store, approverId);
-        if (hostelName) {
-            mappingDeps.push(hostelName);
-        }
-    }
-
-    const references = [];
-    if (studentDeps.length) references.push({ store: "student_master", count: studentDeps.length });
-    if (mappingDeps.length) references.push({ store: "hostel_warden_mapping", count: mappingDeps.length });
-
-    return { error: null, references };
-}
-
-function buildLoginSession(role, identity) {
-    const normalizedRole = normalizeApproverRole(role);
-    const approverId = normIdentityId(identity && identity.id);
-    const approverName = normText(identity && identity.name);
-    const session = {
-        username: approverId || approverName,
-        role: normalizedRole,
-        approverId,
-        approverName,
-        displayName: approverName
-    };
-
-    if (normalizedRole === "warden") {
-        session.hostelName = findWardenHostelById(readCredentialsStore().data, approverId) || "";
-    }
-
-    return session;
-}
-
-function loadApproverDirectory() {
-    const { data } = readJsonObjectFile(CREDENTIALS_FILE, {});
-    const wardens = Array.isArray(data.wardens) ? data.wardens : [];
-    const fas = Array.isArray(data.fas) ? data.fas : [];
-
-    const byId = (rows) => {
-        const map = new Map();
-        for (const row of rows) {
-            const id = normIdentityId(row && row.id);
-            const name = normText(row && row.name);
-            if (!id || !name) continue;
-            map.set(id, { id, name });
-        }
-        return map;
-    };
-
-    const byName = (rows) => {
-        const map = new Map();
-        for (const row of rows) {
-            const id = normIdentityId(row && row.id);
-            const name = normText(row && row.name);
-            if (!id || !name) continue;
-            map.set(normIdentity(name), { id, name });
-        }
-        return map;
-    };
-
-    return {
-        wardensById: byId(wardens),
-        wardensByName: byName(wardens),
-        fasById: byId(fas),
-        fasByName: byName(fas)
-    };
 }
 
 async function loadApproverDirectoryPrimary() {
@@ -581,11 +582,6 @@ function buildHostelWardenMap(raw) {
     }
 
     return map;
-}
-
-function loadHostelWardenMapping() {
-    const { data } = readJsonObjectFile(HOSTEL_WARDEN_FILE, {});
-    return buildHostelWardenMap(data);
 }
 
 async function loadHostelWardenMappingPrimary() {
@@ -672,30 +668,6 @@ async function applyMasterAssignments(candidate, options = {}) {
     return { errors, value: next };
 }
 
-function findStudentLeaveDependencies(rollNumber) {
-    const roll = normText(rollNumber).toUpperCase();
-    const stores = [
-        { label: "leave_data", file: STUDENT_LEAVE_FILE },
-        { label: "warden_leave_requests", file: WARDEN_LEAVE_FILE },
-        { label: "fa_leave_requests", file: DATA_FILE }
-    ];
-
-    const references = [];
-    for (const store of stores) {
-        const { data, error } = readJsonFile(store.file);
-        if (error) {
-            return { error: `Failed to read ${store.label}: ${error}`, references: [] };
-        }
-
-        const count = data.filter((row) => normText(row && row.rollNumber).toUpperCase() === roll).length;
-        if (count > 0) {
-            references.push({ store: store.label, count });
-        }
-    }
-
-    return { error: null, references };
-}
-
 function normalizeMasterStudent(student) {
     const rollNumber = normText(student.rollNumber).toUpperCase();
     const derivedBranch = deriveBranchFromRollNumber(rollNumber);
@@ -745,27 +717,6 @@ function normalizeMasterStudent(student) {
     };
 }
 
-function sanitizeMasterDatabase() {
-    const { data, error } = readJsonFile(STUDENT_MASTER_FILE);
-    if (error || !Array.isArray(data)) return;
-
-    const sanitized = data.map((row) => normalizeMasterStudent(row || {}));
-    if (JSON.stringify(sanitized) !== JSON.stringify(data)) {
-        writeJsonArrayFile(STUDENT_MASTER_FILE, sanitized);
-    }
-}
-
-function loadStudentMasterMap() {
-    const { data, error } = readJsonFile(STUDENT_MASTER_FILE);
-    if (error) return { map: new Map(), error };
-    const map = new Map();
-    for (const row of data) {
-        const normalized = normalizeMasterStudent(row || {});
-        if (normalized.rollNumber) map.set(normalized.rollNumber, normalized);
-    }
-    return { map, error: null };
-}
-
 function normalizeMessRatesModel(raw) {
     const defaults = {
         rates: { even2026: 200, odd2026: 200, even2025: 200, odd2025: 200 },
@@ -789,15 +740,6 @@ function normalizeMessRatesModel(raw) {
     }
 
     return defaults;
-}
-
-function readMessRatesModel() {
-    const { data } = readJsonObjectFile(MESS_RATES_FILE, {});
-    return normalizeMessRatesModel(data);
-}
-
-function writeMessRatesModel(model) {
-    writeJsonObjectFile(MESS_RATES_FILE, model);
 }
 
 function semesterToPeriod(semester, startDate) {
@@ -877,7 +819,10 @@ function buildLeaveSyncPatch(source = {}) {
         bankAccountNumber: bankAccountNumber || undefined,
         bankIfsc: bankIfsc || undefined,
         refundProcessedAt: normText(source.refundProcessedAt) || undefined,
-        refundProcessedBy: normText(source.refundProcessedBy) || undefined
+            refundProcessedBy: normText(source.refundProcessedBy) || undefined,
+            refundRuleMinDays: Number.isFinite(Number(source.refundRuleMinDays)) ? Number(source.refundRuleMinDays) : undefined,
+            refundRuleAmountPerDay: Number.isFinite(Number(source.refundRuleAmountPerDay)) ? Number(source.refundRuleAmountPerDay) : undefined,
+            refundRuleCapturedAt: normText(source.refundRuleCapturedAt) || undefined
     };
     return normalized;
 }
@@ -900,7 +845,10 @@ function applyLeaveSyncPatch(target, patch) {
         "bankAccountNumber",
         "bankIfsc",
         "refundProcessedAt",
-        "refundProcessedBy"
+            "refundProcessedBy",
+            "refundRuleMinDays",
+            "refundRuleAmountPerDay",
+            "refundRuleCapturedAt"
     ];
 
     for (const key of keys) {
@@ -980,94 +928,6 @@ function ensureApproverIdentity(req, res, options = {}) {
     return requester;
 }
 
-function backfillLeavesFromMaster() {
-    const { map, error } = loadStudentMasterMap();
-    if (error) {
-        console.warn("Master DB unavailable for backfill:", error);
-        return;
-    }
-
-    const files = [STUDENT_LEAVE_FILE, WARDEN_LEAVE_FILE, DATA_FILE];
-    for (const file of files) {
-        const { data, error: readErr } = readJsonFile(file);
-        if (readErr) continue;
-        let changed = false;
-
-        const next = data.map((row) => {
-            const roll = normText(row.rollNumber);
-            if (!roll || !map.has(roll)) return row;
-            const hydrated = hydrateFromMaster(row, map.get(roll));
-            if (JSON.stringify(hydrated) !== JSON.stringify(row)) changed = true;
-            return hydrated;
-        });
-
-        if (changed) {
-            writeJsonArrayFile(file, next);
-        }
-    }
-}
-
-function reconcileStudentLeavesWithFaQueue() {
-    const { data: faRows, error: faErr } = readJsonFile(DATA_FILE);
-    if (faErr) return;
-
-    const { data: studentRows, error: studentErr } = readJsonFile(STUDENT_LEAVE_FILE);
-    if (studentErr) return;
-
-    function hasText(value) {
-        return normText(value) !== "";
-    }
-
-    function buildMissingApprovalRefundPatch(faRow, studentRow) {
-        const patch = {};
-
-        if (!hasText(studentRow.status) && hasText(faRow.status)) {
-            patch.status = normText(faRow.status);
-        }
-        if (!hasText(studentRow.wardenApproval) && hasText(faRow.wardenApproval)) {
-            patch.wardenApproval = normText(faRow.wardenApproval);
-        }
-        if (!hasText(studentRow.faApproval) && hasText(faRow.faApproval)) {
-            patch.faApproval = normText(faRow.faApproval);
-        }
-        if (!hasText(studentRow.refundStatus) && hasText(faRow.refundStatus)) {
-            patch.refundStatus = normText(faRow.refundStatus);
-        }
-
-        const studentAmount = Number(studentRow.refundAmount);
-        const faAmount = Number(faRow.refundAmount);
-        if (!Number.isFinite(studentAmount) && Number.isFinite(faAmount)) {
-            patch.refundAmount = faAmount;
-        }
-
-        if (!hasText(studentRow.refundProcessedAt) && hasText(faRow.refundProcessedAt)) {
-            patch.refundProcessedAt = normText(faRow.refundProcessedAt);
-        }
-        if (!hasText(studentRow.refundProcessedBy) && hasText(faRow.refundProcessedBy)) {
-            patch.refundProcessedBy = normText(faRow.refundProcessedBy);
-        }
-
-        return patch;
-    }
-
-    let changed = false;
-    for (const faRow of faRows) {
-        const idx = findLeaveIndexByCompositeKey(studentRows, buildLeaveCompositeKey(faRow));
-        if (idx === -1) continue;
-
-        const patch = buildMissingApprovalRefundPatch(faRow, studentRows[idx]);
-        if (Object.keys(patch).length === 0) continue;
-
-        const before = JSON.stringify(studentRows[idx]);
-        applyLeaveSyncPatch(studentRows[idx], patch);
-        if (JSON.stringify(studentRows[idx]) !== before) changed = true;
-    }
-
-    if (changed) {
-        writeJsonArrayFile(STUDENT_LEAVE_FILE, studentRows);
-    }
-}
-
 app.post("/api/auth/login", async (req, res) => {
     const roleSelection = normText(req.body && (req.body.roleSelection || req.body.role || req.body.selectedRole)).toLowerCase();
     const usernameRaw = normText(req.body && (req.body.username || req.body.Username));
@@ -1086,6 +946,7 @@ app.post("/api/auth/login", async (req, res) => {
     const staticMatch = staticAccounts.find((user) => user.username === lowerUsername && user.password === password);
 
     const { data: credentials } = await readCredentialsStorePrimary();
+    const { map: hostelMap } = await loadHostelWardenMappingPrimary();
     const wardenMatch = credentials.wardens.find((row) => row.active !== false && normIdentityId(row.id) === uppercaseUsername && normText(row.password) === password);
     const faMatch = credentials.fas.find((row) => row.active !== false && normIdentityId(row.id) === uppercaseUsername && normText(row.password) === password);
 
@@ -1098,7 +959,7 @@ app.post("/api/auth/login", async (req, res) => {
         approverId: normIdentityId(row.id),
         approverName: normText(row.name),
         displayName: normText(row.name),
-        hostelName: normalizeHostelName(row.hostelName) || findWardenHostelById(credentials, row.id) || ""
+        hostelName: normalizeHostelName(row.hostelName) || findWardenHostelById(credentials, row.id, hostelMap) || ""
     });
 
     const faSession = (row) => ({
@@ -1162,13 +1023,14 @@ app.get("/api/approvers", async (req, res) => {
     const requestedRole = normalizeApproverRole(req.query && req.query.role);
     const { data, error } = await readCredentialsStorePrimary();
     if (error) return res.status(500).json({ error });
+    const { map: hostelMap } = await loadHostelWardenMappingPrimary();
 
     if (requestedRole) {
-        return res.json(listApproversByRole(data, requestedRole));
+        return res.json(listApproversByRole(data, requestedRole, {}, hostelMap));
     }
 
     res.json({
-        wardens: listApproversByRole(data, "warden"),
+        wardens: listApproversByRole(data, "warden", {}, hostelMap),
         fas: listApproversByRole(data, "fa")
     });
 });
@@ -1199,7 +1061,7 @@ app.post("/api/approvers", async (req, res) => {
     getApproverRows(data, role).push(record);
 
     if (role === "warden") {
-        const { data: currentMap } = await readObjectStore(HOSTEL_WARDEN_FILE, {});
+        const { data: currentMap } = await readHostelWardenStore();
         const map = new Map();
         for (const [hostelNameKey, value] of Object.entries(currentMap || {})) {
             const key = normHostelKey(hostelNameKey);
@@ -1224,11 +1086,11 @@ app.post("/api/approvers", async (req, res) => {
         for (const [key, value] of map.entries()) {
             nextMapping[value.hostelName || key] = value;
         }
-        await writeObjectStore(HOSTEL_WARDEN_FILE, nextMapping);
+        await writeHostelWardenStore(nextMapping);
     }
 
     try {
-        await writeObjectStore(CREDENTIALS_FILE, {
+        await writeCredentialsObjectStore({
             wardens: Array.isArray(data.wardens) ? data.wardens : [],
             fas: Array.isArray(data.fas) ? data.fas : []
         });
@@ -1258,7 +1120,7 @@ app.delete("/api/approvers/:role/:id", async (req, res) => {
     current.active = false;
 
     try {
-        await writeObjectStore(CREDENTIALS_FILE, {
+        await writeCredentialsObjectStore({
             wardens: Array.isArray(data.wardens) ? data.wardens : [],
             fas: Array.isArray(data.fas) ? data.fas : []
         });
@@ -1269,10 +1131,50 @@ app.delete("/api/approvers/:role/:id", async (req, res) => {
     }
 });
 
+app.get("/api/mess-constraints", async (req, res) => {
+    const { data, error } = await readMessConstraintsStore();
+    if (error) {
+        // If node is not initialized yet, return defaults instead of failing.
+        console.warn("Mess constraints not found or unreadable, returning defaults:", error);
+        return res.json({ minDaysForRefund: 3, amountPerDay: 200 });
+    }
+    res.json(data);
+});
+
+app.post("/api/mess-constraints", async (req, res) => {
+    const { minDaysForRefund, amountPerDay } = req.body || {};
+
+    const min = Number(minDaysForRefund);
+    const amount = Number(amountPerDay);
+
+    if (!Number.isFinite(min) || min < 0) {
+        return res.status(400).json({ error: "minDaysForRefund must be a non-negative number" });
+    }
+    if (!Number.isFinite(amount) || amount < 0) {
+        return res.status(400).json({ error: "amountPerDay must be a non-negative number" });
+    }
+
+    const constraints = {
+        minDaysForRefund: min,
+        amountPerDay: amount,
+        updatedAt: new Date().toISOString(),
+        updatedBy: req.headers["x-user-id"] || "unknown"
+    };
+
+    try {
+        await writeMessConstraintsStore(constraints);
+    } catch (err) {
+        console.error("Error writing mess constraints:", err);
+        return res.status(500).json({ error: "Failed to save mess constraints" });
+    }
+
+    res.json({ success: true, data: constraints });
+});
+
 // ===== Master Student Routes =====
 
 app.get("/api/student-master", async (req, res) => {
-    const { data, error } = await readArrayStore(STUDENT_MASTER_FILE);
+    const { data, error } = await readStudentMasterStore();
     if (error) return res.status(500).json({ error });
     res.json(data.map(normalizeMasterStudent));
 });
@@ -1300,7 +1202,7 @@ app.get("/api/hostel-warden-mapping", async (req, res) => {
 // ===== FA Routes =====
 
 app.get("/api/leave-requests", async (req, res) => {
-    const { data, error } = await readArrayStore(DATA_FILE);
+    const { data, error } = await readFaLeaveStore();
     if (error) return res.status(500).json({ error: "Failed to read leave data" });
     const { map, error: mapErr } = await loadStudentMasterMapPrimary();
     if (mapErr) return res.status(500).json({ error: mapErr });
@@ -1355,7 +1257,7 @@ app.post("/api/update-leave", async (req, res) => {
             return res.status(400).json({ error: "Approved status requires refundStatus to be Processing or No Refund" });
         }
 
-        const { data, error } = await readArrayStore(DATA_FILE);
+        const { data, error } = await readFaLeaveStore();
         if (error) return res.status(500).json({ error });
         if (index < 0 || index >= data.length) {
             return res.status(400).json({ error: "Invalid index" });
@@ -1375,13 +1277,13 @@ app.post("/api/update-leave", async (req, res) => {
         data[index].refundStatus = refundStatus;
 
         try {
-            await writeArrayStore(DATA_FILE, data);
+            await writeFaLeaveStore(data);
         } catch (err) {
             console.error("Error writing FA leave data:", err);
             return res.status(500).json({ error: "Failed to persist FA leave data" });
         }
 
-        const { data: studentLeaves, error: studentErr } = await readArrayStore(STUDENT_LEAVE_FILE);
+        const { data: studentLeaves, error: studentErr } = await readStudentLeaveStore();
         if (studentErr) return res.status(500).json({ error: studentErr });
 
         const faSyncPatch = buildLeaveSyncPatch(data[index]);
@@ -1391,7 +1293,7 @@ app.post("/api/update-leave", async (req, res) => {
         }
 
         try {
-            await writeArrayStore(STUDENT_LEAVE_FILE, studentLeaves);
+            await writeStudentLeaveStore(studentLeaves);
         } catch (err) {
             console.error("Error writing leave_data.json:", err);
             return res.status(500).json({ error: "Failed to persist leave_data.json sync" });
@@ -1407,7 +1309,7 @@ app.post("/api/update-leave", async (req, res) => {
 // ===== Warden Routes =====
 
 app.get("/api/warden-leave-requests", async (req, res) => {
-    const { data, error } = await readArrayStore(WARDEN_LEAVE_FILE);
+    const { data, error } = await readWardenLeaveStore();
     if (error) return res.status(500).json({ error });
     const { map, error: mapErr } = await loadStudentMasterMapPrimary();
     if (mapErr) return res.status(500).json({ error: mapErr });
@@ -1439,7 +1341,7 @@ app.post("/api/warden-update-leave", async (req, res) => {
         return res.status(400).json({ error: `Invalid wardenApproval. Allowed: ${VALID_WARDEN_APPROVALS.join(", ")}` });
     }
 
-    const { data, error } = await readArrayStore(WARDEN_LEAVE_FILE);
+    const { data, error } = await readWardenLeaveStore();
     if (error) return res.status(500).json({ error });
     if (index < 0 || index >= data.length) return res.status(400).json({ error: `Invalid index ${index}. Must be 0–${data.length - 1}` });
 
@@ -1465,7 +1367,7 @@ app.post("/api/warden-update-leave", async (req, res) => {
     record.wardenApproval = wardenApproval;
     if (status === "Rejected") record.refundStatus = "No Refund";
 
-    const { data: studentLeaves, error: studentErr } = await readArrayStore(STUDENT_LEAVE_FILE);
+    const { data: studentLeaves, error: studentErr } = await readStudentLeaveStore();
     if (studentErr) return res.status(500).json({ error: studentErr });
 
     const leaveSyncPatch = buildLeaveSyncPatch(record);
@@ -1475,14 +1377,14 @@ app.post("/api/warden-update-leave", async (req, res) => {
     }
 
     try {
-        await writeArrayStore(WARDEN_LEAVE_FILE, data);
+        await writeWardenLeaveStore(data);
     } catch (err) {
         console.error("Error writing warden leave data:", err);
         return res.status(500).json({ error: "Failed to persist Warden approval" });
     }
 
     try {
-        await writeArrayStore(STUDENT_LEAVE_FILE, studentLeaves);
+        await writeStudentLeaveStore(studentLeaves);
     } catch (err) {
         console.error("Error writing leave_data.json:", err);
         return res.status(500).json({ error: "Failed to persist leave_data.json sync" });
@@ -1490,8 +1392,18 @@ app.post("/api/warden-update-leave", async (req, res) => {
 
     if (status === "Pending FA Approval" && wardenApproval === "Approved") {
         try {
-            const { data: faData, error: faErr } = await readArrayStore(DATA_FILE);
-            const faList = faErr ? [] : faData;
+            let faList = [];
+            if (USE_POSTGRES_PRIMARY) {
+                const { data: faData, error: faErr } = await readFaLeaveStore();
+                if (faErr) {
+                    return res.status(500).json({ error: `Failed to read FA queue: ${faErr}` });
+                }
+                faList = Array.isArray(faData) ? faData : [];
+            } else {
+                const firebaseFa = await readFromFirebase("fa_leave_requests");
+                faList = Array.isArray(firebaseFa) ? firebaseFa : [];
+            }
+
             const { map: masterMap } = await loadStudentMasterMapPrimary();
             const master = masterMap.get(normText(record.rollNumber).toUpperCase());
             const source = master ? hydrateFromMaster(record, master) : record;
@@ -1529,9 +1441,14 @@ app.post("/api/warden-update-leave", async (req, res) => {
                 applyLeaveSyncPatch(faList[existingIndex], propagatedSyncPatch);
             }
 
-            await writeArrayStore(DATA_FILE, faList);
+            if (USE_POSTGRES_PRIMARY) {
+                await writeFaLeaveStore(faList);
+            } else {
+                await writeToFirebase("fa_leave_requests", faList);
+            }
         } catch (propErr) {
-            console.error("Warning: failed to propagate to FA queue:", propErr);
+            console.error("Failed to propagate to FA queue:", propErr);
+            return res.status(500).json({ error: "Failed to propagate leave to FA queue" });
         }
     }
 
@@ -1543,37 +1460,33 @@ app.get("/api/warden-students", async (req, res) => {
     if (!requester) return;
     const shouldScopeToWarden = normText(req.authRole).toLowerCase() === "warden" && (requester.id || requester.name);
 
-    const { data: masterData, error: masterErr } = await readArrayStore(STUDENT_MASTER_FILE);
-    if (!masterErr) {
-        const scopedMasterData = shouldScopeToWarden
-            ? masterData.filter((s) => isRequesterAssigned(s, new Map(), "warden", requester))
-            : masterData;
-        const mapped = scopedMasterData.map((s) => ({
-            rollNumber: s.rollNumber,
-            name: s.name,
-            fatherName: s.fatherName,
-            branch: s.branch || "—",
-            roomNumber: s.roomNumber || "—",
-            phone: s.phone,
-            parentPhone: s.fatherPhone || "—",
-            fa: s.fa,
-            messName: s.messName,
-            email: s.email || "—",
-            year: s.year,
-            hostel: s.hostelName
-        }));
-        return res.json(mapped);
-    }
+    const { data: masterData, error: masterErr } = await readStudentMasterStore();
+    if (masterErr) return res.status(500).json({ error: masterErr });
 
-    const { data, error } = await readArrayStore(WARDEN_STUDENTS_FILE);
-    if (error) return res.status(500).json({ error });
-    res.json(data);
+    const scopedMasterData = shouldScopeToWarden
+        ? masterData.filter((s) => isRequesterAssigned(s, new Map(), "warden", requester))
+        : masterData;
+    const mapped = scopedMasterData.map((s) => ({
+        rollNumber: s.rollNumber,
+        name: s.name,
+        fatherName: s.fatherName,
+        branch: s.branch || "—",
+        roomNumber: s.roomNumber || "—",
+        phone: s.phone,
+        parentPhone: s.fatherPhone || "—",
+        fa: s.fa,
+        messName: s.messName,
+        email: s.email || "—",
+        year: s.year,
+        hostel: s.hostelName
+    }));
+    return res.json(mapped);
 });
 
 // ===== Mess Routes =====
 
 app.get("/api/mess-semester-rates", async (req, res) => {
-    const { data } = await readObjectStore(MESS_RATES_FILE, {});
+    const { data } = await readMessRatesStore();
     const model = normalizeMessRatesModel(data);
     res.json(model);
 });
@@ -1591,7 +1504,7 @@ app.post("/api/mess-semester-rates", async (req, res) => {
         return res.status(400).json({ error: "Rate must be a non-negative number" });
     }
 
-    const { data: modelRaw } = await readObjectStore(MESS_RATES_FILE, {});
+    const { data: modelRaw } = await readMessRatesStore();
     const model = normalizeMessRatesModel(modelRaw);
     if (model.locks[key]) {
         return res.status(400).json({ error: `Rate for ${key} is locked` });
@@ -1600,7 +1513,7 @@ app.post("/api/mess-semester-rates", async (req, res) => {
     model.rates[key] = numericRate;
 
     try {
-        await writeObjectStore(MESS_RATES_FILE, model);
+        await writeMessRatesStore(model);
         res.json({ success: true, data: model });
     } catch (err) {
         console.error("Error writing semester rates:", err);
@@ -1619,12 +1532,12 @@ app.post("/api/mess-rate-lock", async (req, res) => {
         return res.status(400).json({ error: "locked must be boolean" });
     }
 
-    const { data: modelRaw } = await readObjectStore(MESS_RATES_FILE, {});
+    const { data: modelRaw } = await readMessRatesStore();
     const model = normalizeMessRatesModel(modelRaw);
     model.locks[key] = locked;
 
     try {
-        await writeObjectStore(MESS_RATES_FILE, model);
+        await writeMessRatesStore(model);
         res.json({ success: true, data: model });
     } catch (err) {
         console.error("Error updating lock state:", err);
@@ -1633,9 +1546,9 @@ app.post("/api/mess-rate-lock", async (req, res) => {
 });
 
 app.get("/api/mess-refunds", async (req, res) => {
-    const { data: modelRaw } = await readObjectStore(MESS_RATES_FILE, {});
+    const { data: modelRaw } = await readMessRatesStore();
     const model = normalizeMessRatesModel(modelRaw);
-    const { data, error } = await readArrayStore(DATA_FILE);
+    const { data, error } = await readFaLeaveStore();
     if (error) return res.status(500).json({ error });
     const { map } = await loadStudentMasterMapPrimary();
     const hydrated = hydrateLeaveRows(data, map);
@@ -1678,7 +1591,7 @@ app.post("/api/mess-update-refund", async (req, res) => {
         return res.status(400).json({ error: "refundAmount must be a non-negative number" });
     }
 
-    const { data, error } = await readArrayStore(DATA_FILE);
+    const { data, error } = await readFaLeaveStore();
     if (error) return res.status(500).json({ error });
     if (index < 0 || index >= data.length) {
         return res.status(400).json({ error: `Invalid index ${index}. Must be 0–${data.length - 1}` });
@@ -1700,7 +1613,7 @@ app.post("/api/mess-update-refund", async (req, res) => {
         item.refundProcessedBy = "Mess";
     }
 
-    const { data: studentLeaves, error: studentLeavesErr } = await readArrayStore(STUDENT_LEAVE_FILE);
+    const { data: studentLeaves, error: studentLeavesErr } = await readStudentLeaveStore();
     if (studentLeavesErr) {
         return res.status(500).json({ error: studentLeavesErr });
     }
@@ -1711,14 +1624,14 @@ app.post("/api/mess-update-refund", async (req, res) => {
     }
 
     try {
-        await writeArrayStore(DATA_FILE, data);
+        await writeFaLeaveStore(data);
     } catch (err) {
         console.error("Error writing mess refund data:", err);
         return res.status(500).json({ error: "Failed to persist mess refund data" });
     }
 
     try {
-        await writeArrayStore(STUDENT_LEAVE_FILE, studentLeaves);
+        await writeStudentLeaveStore(studentLeaves);
     } catch (err) {
         console.error("Error writing leave_data.json:", err);
         return res.status(500).json({ error: "Failed to persist leave_data.json sync" });
@@ -1733,7 +1646,7 @@ app.put("/api/student-master/:rollNumber", async (req, res) => {
     const roll = normText(req.params.rollNumber).toUpperCase();
     if (!roll) return res.status(400).json({ error: "rollNumber is required" });
 
-    const { data, error } = await readArrayStore(STUDENT_MASTER_FILE);
+    const { data, error } = await readStudentMasterStore();
     if (error) return res.status(500).json({ error });
 
     const idx = data.findIndex((s) => normText(s.rollNumber).toUpperCase() === roll);
@@ -1760,7 +1673,7 @@ app.put("/api/student-master/:rollNumber", async (req, res) => {
     data[idx] = normalizeMasterStudent(assigned.value);
 
     try {
-        await writeArrayStore(STUDENT_MASTER_FILE, data);
+        await writeStudentMasterStore(data);
         res.json({ success: true, student: data[idx] });
     } catch (err) {
         console.error("Error updating master record:", err);
@@ -1773,7 +1686,7 @@ app.post("/api/student-master", async (req, res) => {
     const roll = normText(body.rollNumber).toUpperCase();
     if (!roll) return res.status(400).json({ error: "rollNumber is required" });
 
-    const { data, error } = await readArrayStore(STUDENT_MASTER_FILE);
+    const { data, error } = await readStudentMasterStore();
     if (error) return res.status(500).json({ error });
 
     if (data.some((s) => normText(s.rollNumber).toUpperCase() === roll)) {
@@ -1791,7 +1704,7 @@ app.post("/api/student-master", async (req, res) => {
     data.push(record);
 
     try {
-        await writeArrayStore(STUDENT_MASTER_FILE, data);
+        await writeStudentMasterStore(data);
         res.json({ success: true, student: record });
     } catch (err) {
         console.error("Error adding master record:", err);
@@ -1803,7 +1716,7 @@ app.delete("/api/student-master/:rollNumber", async (req, res) => {
     const roll = normText(req.params.rollNumber).toUpperCase();
     if (!roll) return res.status(400).json({ error: "rollNumber is required" });
 
-    const { data, error } = await readArrayStore(STUDENT_MASTER_FILE);
+    const { data, error } = await readStudentMasterStore();
     if (error) return res.status(500).json({ error });
 
     const idx = data.findIndex((s) => normText(s.rollNumber).toUpperCase() === roll);
@@ -1829,7 +1742,7 @@ app.delete("/api/student-master/:rollNumber", async (req, res) => {
     data.splice(idx, 1);
 
     try {
-        await writeArrayStore(STUDENT_MASTER_FILE, data);
+        await writeStudentMasterStore(data);
         res.json({ success: true });
     } catch (err) {
         console.error("Error deleting master record:", err);
@@ -1878,11 +1791,11 @@ function validateMasterFields(body) {
 // ===== Student Routes =====
 
 app.get("/api/student-leaves", async (req, res) => {
-    const { data, error } = await readArrayStore(STUDENT_LEAVE_FILE);
+    const { data, error } = await readStudentLeaveStore();
     if (error) return res.status(500).json({ error: "Failed to read student leave data" });
     const { map } = await loadStudentMasterMapPrimary();
 
-    const { data: faRows, error: faError } = await readArrayStore(DATA_FILE);
+    const { data: faRows, error: faError } = await readFaLeaveStore();
     const faByComposite = new Map();
     if (!faError && Array.isArray(faRows)) {
         for (const row of faRows) {
@@ -1903,6 +1816,9 @@ app.get("/api/student-leaves", async (req, res) => {
             refundAmount: Number.isFinite(Number(faRow.refundAmount)) ? Number(faRow.refundAmount) : row.refundAmount,
             refundProcessedAt: faRow.refundProcessedAt || row.refundProcessedAt,
             refundProcessedBy: faRow.refundProcessedBy || row.refundProcessedBy,
+                refundRuleMinDays: Number.isFinite(Number(faRow.refundRuleMinDays)) ? Number(faRow.refundRuleMinDays) : row.refundRuleMinDays,
+                refundRuleAmountPerDay: Number.isFinite(Number(faRow.refundRuleAmountPerDay)) ? Number(faRow.refundRuleAmountPerDay) : row.refundRuleAmountPerDay,
+                refundRuleCapturedAt: faRow.refundRuleCapturedAt || row.refundRuleCapturedAt,
             bankName: normText(faRow.bankName) || row.bankName,
             bankAccountNumber: normText(faRow.bankAccountNumber || faRow.accountNumber) || row.bankAccountNumber,
             bankIfsc: normText(faRow.bankIfsc || faRow.ifsc) || row.bankIfsc
@@ -1944,10 +1860,19 @@ app.post("/api/submit-leave", async (req, res) => {
         const selectedParent = parentRelation === "mother" ? student.motherPhone : student.fatherPhone;
         const totalDays = Math.floor((end - start) / (24 * 60 * 60 * 1000)) + 1;
 
-        const { data: studentLeaves, error: studentErr } = await readArrayStore(STUDENT_LEAVE_FILE);
+            const { data: constraintsData } = await readMessConstraintsStore();
+            const refundRuleMinDays = Number.isFinite(Number(constraintsData && constraintsData.minDaysForRefund))
+                ? Number(constraintsData.minDaysForRefund)
+                : 3;
+            const refundRuleAmountPerDay = Number.isFinite(Number(constraintsData && constraintsData.amountPerDay))
+                ? Number(constraintsData.amountPerDay)
+                : 200;
+            const refundRuleCapturedAt = new Date().toISOString();
+
+        const { data: studentLeaves, error: studentErr } = await readStudentLeaveStore();
         if (studentErr) return res.status(500).json({ error: studentErr });
 
-        const { data: wardenLeaves, error: wardenErr } = await readArrayStore(WARDEN_LEAVE_FILE);
+        const { data: wardenLeaves, error: wardenErr } = await readWardenLeaveStore();
         if (wardenErr) return res.status(500).json({ error: wardenErr });
 
         const compositeExists = (rows) => rows.some((row) =>
@@ -1989,14 +1914,17 @@ app.post("/api/submit-leave", async (req, res) => {
             familyApproval: "Skipped",
             wardenApproval: "Pending",
             faApproval: "Pending",
-            refundStatus: "Awaiting Approval"
+            refundStatus: "Awaiting Approval",
+            refundRuleMinDays,
+            refundRuleAmountPerDay,
+            refundRuleCapturedAt
         };
 
         studentLeaves.push(leaveRecord);
         wardenLeaves.push({ ...leaveRecord });
 
-        await writeArrayStore(STUDENT_LEAVE_FILE, studentLeaves);
-        await writeArrayStore(WARDEN_LEAVE_FILE, wardenLeaves);
+        await writeStudentLeaveStore(studentLeaves);
+        await writeWardenLeaveStore(wardenLeaves);
         res.json({ success: true, status: "Pending Warden Approval" });
     } catch (err) {
         console.error("Error submitting leave:", err);
@@ -2004,10 +1932,47 @@ app.post("/api/submit-leave", async (req, res) => {
     }
 });
 
+app.get("/api/health/db", async (req, res) => {
+    const health = {
+        mode: DB_MODE,
+        postgres: {
+            enabled: USE_POSTGRES_PRIMARY,
+            configured: isPostgresConfigured(),
+            ok: false
+        },
+        firebase: {
+            primary: USE_FIREBASE_PRIMARY,
+            mirror: USE_FIREBASE_MIRROR_WRITE,
+            ok: isFirebaseReady()
+        }
+    };
+
+    if (USE_POSTGRES_PRIMARY) {
+        try {
+            const row = await postgresHealthCheck();
+            health.postgres.ok = true;
+            health.postgres.now = row.now;
+        } catch (err) {
+            health.postgres.error = err.message;
+        }
+    }
+
+    const statusCode = health.postgres.enabled && !health.postgres.ok ? 500 : 200;
+    res.status(statusCode).json(health);
+});
+
 app.listen(PORT, () => {
     console.log(`✅ Server running at http://localhost:${PORT}`);
     console.log(`   Open http://localhost:${PORT}/index.html`);
-    console.log("[firebase] Firebase-only persistence is enabled.");
+    console.log(`[storage] DB_MODE=${DB_MODE}`);
+    if (USE_POSTGRES_PRIMARY) {
+        console.log("[storage] PostgreSQL primary storage is enabled.");
+    }
+    if (USE_FIREBASE_PRIMARY) {
+        console.log("[firebase] Firebase primary storage is enabled.");
+    } else if (USE_FIREBASE_MIRROR_WRITE) {
+        console.log("[firebase] Firebase mirror writes are enabled.");
+    }
     if (!AUTH_ENABLED) {
         console.warn("⚠️ AUTH_ENABLED is false. API role checks are currently disabled.");
     }

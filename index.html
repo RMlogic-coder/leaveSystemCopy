@@ -89,6 +89,8 @@
                 errEl.style.display = "none";
                 const session = json.session || {};
                 sessionStorage.setItem("loggedInUser", JSON.stringify(session));
+                const apiKey = String(sessionStorage.getItem("apiAccessKey") || localStorage.getItem("apiAccessKey") || "change-me").trim();
+                if (apiKey) sessionStorage.setItem("apiAccessKey", apiKey);
                 window.location.href = json.redirect || "/index.html";
             } catch (error) {
                 console.error("Login failed:", error);

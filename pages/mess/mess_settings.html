@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE-edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mess Settings</title>
+    <link rel="stylesheet" href="/css/style_mess_dashboard.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+
+<body>
+
+    <div class="dashboard">
+
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <img src="/Images/HorizontalWhite.png" alt="Logo" class="logo">
+                <button class="close-btn" onclick="toggleSidebar()">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <nav>
+                <a href="/pages/mess/mess_dashboard.html">
+                    <i class="fa-solid fa-gauge"></i>
+                    <span>Dashboard</span>
+                </a>
+                <a href="/pages/mess/mess_history.html">
+                    <i class="fa-solid fa-clock-rotate-left"></i>
+                    <span>History</span>
+                </a>
+                <a class="active">
+                    <i class="fa-solid fa-gear"></i>
+                    <span>Settings</span>
+                </a>
+                <a class="logout" href="/index.html" onclick="sessionStorage.clear()">
+                    <i class="fa-solid fa-right-from-bracket"></i>
+                    <span>Logout</span>
+                </a>
+            </nav>
+        </aside>
+
+        <main class="main">
+            <header class="topbar">
+                <button class="menu-btn" onclick="toggleSidebar()">☰</button>
+                <div class="topbar-center">
+                    <h3>Mess Settings</h3>
+                </div>
+                <div class="topbar-right">
+                    <div class="profile">Mess Office</div>
+                    <a href="/index.html" class="logout-top" onclick="sessionStorage.clear()">
+                        <i class="fa-solid fa-right-from-bracket"></i>
+                    </a>
+                </div>
+            </header>
+
+            <section class="content">
+                <div class="content-wrapper">
+
+                    <div class="cards">
+                        <div class="card">
+                            <h4>Refund Constraints</h4>
+                            <p style="font-size: 0.9rem; color: #666;">Configure minimum days and daily refund amount</p>
+                        </div>
+                    </div>
+
+                    <div class="table-section" style="margin-top: 18px; max-width: 600px;">
+                        <h3 class="section-title">
+                            <i class="fa-solid fa-sliders"></i>
+                            Refund Eligibility Rules
+                        </h3>
+
+                        <div id="settingsForm" style="background: #fafafa; padding: 20px; border-radius: 6px; border: 1px solid #ddd;">
+                            <div class="form-group" style="margin-bottom: 20px;">
+                                <label for="minDaysInput" style="display: block; font-weight: 500; margin-bottom: 8px;">
+                                    <i class="fa-solid fa-calendar"></i> Minimum Days for Refund Eligibility
+                                </label>
+                                <input 
+                                    type="number" 
+                                    id="minDaysInput" 
+                                    min="0" 
+                                    style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 1rem;"
+                                    placeholder="Enter minimum days (e.g., 3)"
+                                >
+                                <small style="display: block; margin-top: 6px; color: #666;">
+                                    Students with leave duration ≤ this value will get "No Refund"
+                                </small>
+                            </div>
+
+                            <div class="form-group" style="margin-bottom: 20px;">
+                                <label for="amountPerDayInput" style="display: block; font-weight: 500; margin-bottom: 8px;">
+                                    <i class="fa-solid fa-rupee"></i> Amount per Day (₹)
+                                </label>
+                                <input 
+                                    type="number" 
+                                    id="amountPerDayInput" 
+                                    min="0" 
+                                    step="10"
+                                    style="width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 1rem;"
+                                    placeholder="Enter amount in rupees (e.g., 200)"
+                                >
+                                <small style="display: block; margin-top: 6px; color: #666;">
+                                    Refund = Days × Amount per Day (applies to eligible students only)
+                                </small>
+                            </div>
+
+                            <div style="background: #fff9e6; padding: 12px; border-radius: 4px; margin-bottom: 20px; border-left: 4px solid #ffc107;">
+                                <p style="margin: 0; font-size: 0.95rem; color: #856404;">
+                                    <i class="fa-solid fa-info-circle"></i> <strong>Note:</strong> Changes apply only to new applications. Existing applications will retain their original calculations.
+                                </p>
+                            </div>
+
+                            <div style="display: flex; gap: 10px;">
+                                <button 
+                                    id="saveSettingsBtn" 
+                                    class="apply-leave-btn"
+                                    onclick="saveSettings()"
+                                    style="padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;"
+                                >
+                                    <i class="fa-solid fa-floppy-disk"></i> Save Settings
+                                </button>
+                                <button 
+                                    class="prev-app-btn"
+                                    onclick="resetForm()"
+                                    style="padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; background: #6c757d; color: white; font-weight: 500;"
+                                >
+                                    <i class="fa-solid fa-undo"></i> Reset
+                                </button>
+                            </div>
+
+                            <div id="settingsMessage" style="margin-top: 15px; padding: 10px; border-radius: 4px; display: none;"></div>
+                        </div>
+
+                        <!-- <div style="margin-top: 30px; padding: 15px; background: #e3f2fd; border-radius: 6px; border-left: 4px solid #2196F3;">
+                            <h4 style="margin-top: 0; color: #1976D2;">
+                                <i class="fa-solid fa-lightbulb"></i> How It Works
+                            </h4>
+                            <ul style="margin: 10px 0; padding-left: 20px; color: #333;">
+                                <li><strong>1. Set Constraints:</strong> Define the minimum days required for refund eligibility and the daily refund amount.</li>
+                                <li><strong>2. Apply to New Applications:</strong> Only leave applications submitted after these settings are saved will use the new constraints.</li>
+                                <li><strong>3. Old Applications Unaffected:</strong> Previously submitted applications keep their original refund calculations.</li>
+                                <li><strong>Example:</strong> If you set "Min Days = 4" and "Amount = 250", then only students with ≥ 4 day leaves get ₹250/day refund.</li>
+                            </ul>
+                        </div> -->
+
+                    </div>
+
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="/js/mess_settings.js"></script>
+
+</body>
+
+</html>

@@ -8,6 +8,23 @@ const GOOGLE_APPLICATION_CREDENTIALS = String(process.env.GOOGLE_APPLICATION_CRE
 
 let initialized = false;
 
+function sanitizeForFirebase(value) {
+    if (value === undefined) return null;
+    if (value === null) return null;
+    if (Array.isArray(value)) {
+        return value.map((item) => sanitizeForFirebase(item));
+    }
+    if (typeof value === "object") {
+        const next = {};
+        for (const [key, child] of Object.entries(value)) {
+            if (child === undefined) continue;
+            next[key] = sanitizeForFirebase(child);
+        }
+        return next;
+    }
+    return value;
+}
+
 function loadServiceAccount() {
     if (FIREBASE_SERVICE_ACCOUNT_JSON) {
         return JSON.parse(FIREBASE_SERVICE_ACCOUNT_JSON);
@@ -54,10 +71,12 @@ function isFirebaseReady() {
 function mirrorToFirebase(nodePath, payload) {
     if (!initialized) return;
 
+    const safePayload = sanitizeForFirebase(payload);
+
     admin
         .database()
         .ref(String(nodePath || "").replace(/^\/+/, ""))
-        .set(payload)
+        .set(safePayload)
         .catch((err) => {
             console.warn(`[firebase] Mirror failed for ${nodePath}: ${err.message}`);
         });
@@ -66,10 +85,12 @@ function mirrorToFirebase(nodePath, payload) {
 async function writeToFirebase(nodePath, payload) {
     if (!initialized) return false;
 
+    const safePayload = sanitizeForFirebase(payload);
+
     await admin
         .database()
         .ref(String(nodePath || "").replace(/^\/+/, ""))
-        .set(payload);
+        .set(safePayload);
 
     return true;
 }

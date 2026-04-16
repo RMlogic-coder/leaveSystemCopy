@@ -5,13 +5,18 @@
     "main": "server.js",
     "scripts": {
         "start": "node server.js",
-        "firebase:import": "node import_firebase.js"
+        "firebase:import": "node import_firebase.js",
+        "db:migrate-store": "node scripts/migrate_json_to_postgres_store.js",
+        "db:inspect": "node scripts/db_inspect.js"
     },
     "dependencies": {
+        "@supabase/supabase-js": "^2.103.0",
         "dotenv": "^17.4.0",
         "express": "^4.22.1",
         "firebase": "^12.11.0",
-        "firebase-admin": "^13.7.0"
+        "firebase-admin": "^13.8.0",
+        "fs": "^0.0.1-security",
+        "pg": "^8.20.0"
     },
     "repository": {
         "type": "git",

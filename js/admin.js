@@ -168,7 +168,9 @@
     function buildApiHeaders() {
         const headers = { "Content-Type": "application/json" };
         const role = String(session.role || "admin").toLowerCase();
+        const apiKey = String(sessionStorage.getItem("apiAccessKey") || localStorage.getItem("apiAccessKey") || "change-me").trim();
         headers["x-user-role"] = role;
+        if (apiKey) headers["x-api-key"] = apiKey;
 
         if (session.approverId || session.rollNumber || session.username) {
             headers["x-user-id"] = String(session.approverId || session.rollNumber || session.username).trim();

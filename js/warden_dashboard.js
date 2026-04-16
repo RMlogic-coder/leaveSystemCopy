@@ -162,9 +162,11 @@ function resolveWardenSession(session) {
 
 function apiHeaders() {
     const headers = { "Content-Type": "application/json" };
+    const apiKey = String(sessionStorage.getItem("apiAccessKey") || localStorage.getItem("apiAccessKey") || "change-me").trim();
     if (wardenSession.approverId) headers["x-user-id"] = wardenSession.approverId;
     if (wardenSession.approverName) headers["x-user-name"] = wardenSession.approverName;
     headers["x-user-role"] = "warden";
+    if (apiKey) headers["x-api-key"] = apiKey;
     return headers;
 }
 

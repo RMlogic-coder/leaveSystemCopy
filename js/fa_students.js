@@ -104,7 +104,9 @@ function resolveFaSession(session) {
 
 function apiHeaders() {
     const headers = { "Content-Type": "application/json" };
+    const apiKey = String(sessionStorage.getItem("apiAccessKey") || localStorage.getItem("apiAccessKey") || "change-me").trim();
     headers["x-user-role"] = "fa";
+    if (apiKey) headers["x-api-key"] = apiKey;
     if (faSession.approverId) headers["x-user-id"] = faSession.approverId;
     if (faSession.approverName) headers["x-user-name"] = faSession.approverName;
     return headers;

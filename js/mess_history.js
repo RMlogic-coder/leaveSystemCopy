@@ -17,6 +17,13 @@ document.addEventListener("click", function (e) {
 let rows = [];
 let currentFilter = "all";
 
+function apiHeaders() {
+    const apiKey = String(sessionStorage.getItem("apiAccessKey") || localStorage.getItem("apiAccessKey") || "change-me").trim();
+    const headers = { "x-user-role": "mess" };
+    if (apiKey) headers["x-api-key"] = apiKey;
+    return headers;
+}
+
 function esc(str) {
     const d = document.createElement("div");
     d.textContent = str == null ? "—" : String(str);
@@ -47,7 +54,7 @@ function statusBadge(status) {
 }
 
 document.addEventListener("DOMContentLoaded", function () {
-    fetch("/api/mess-refunds")
+    fetch("/api/mess-refunds", { headers: apiHeaders() })
         .then(r => { if (!r.ok) throw new Error("Failed to load refunds"); return r.json(); })
         .then(data => {
             if (!Array.isArray(data)) throw new Error("Invalid payload");

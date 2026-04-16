@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <title>Leave & Mess Refund Application</title>
@@ -7,57 +8,48 @@
     <!-- CSS -->
     <link rel="stylesheet" href="/css/test.css">
 </head>
+
 <body>
+    <!DOCTYPE html>
 
-<div class="form-container">
-    <h2>Leave & Mess Refund Application</h2>
+    <html>
 
-    <form>
-        <!-- Student Info -->
-        <label>Student Name</label>
-        <input type="text" value="Rishi Manchanda" readonly>
+    <head>
+        <title>Test Update</title>
+    </head>
 
-        <label>Roll Number</label>
-        <input type="text" value="20CS1234" readonly>
+    <body>
 
-        <!-- Parent Phone Selection -->
-        <label>Select Parent Mobile Number</label>
-        <div class="phone-box">
-            <label>
-                <input type="radio" name="parent_phone" required>
-                Father – 9876543210
-            </label>
-            <label>
-                <input type="radio" name="parent_phone">
-                Mother – 9123456780
-            </label>
-        </div>
+        ```
+        <h2>Update Student Name</h2>
 
-        <!-- Mess -->
-        <label>Mess Name</label>
-        <select required>
-            <option value="">Select Mess</option>
-            <option>Mess A</option>
-            <option>Mess B</option>
-        </select>
+        <input type="number" id="id" placeholder="Student ID"><br><br>
+        <input type="text" id="name" placeholder="New Name"><br><br>
 
-        <!-- Leave Dates -->
-        <label>Leave Start Date</label>
-        <input type="date" id="startDate" required>
+        <button onclick="updateStudent()">Update</button>
 
-        <label>Leave End Date</label>
-        <input type="date" id="endDate" required>
+        <p id="result"></p>
 
-        <!-- Auto Days -->
-        <label>Total Leave Days</label>
-        <input type="number" id="totalDays" readonly>
+        <script>
+            async function updateStudent() {
+                const id = document.getElementById("id").value;
+                const name = document.getElementById("name").value;
 
-        <!-- Status -->
-        <button type="submit" class="btn">Submit Application</button>
-    </form>
-</div>
+                const res = await fetch("http://localhost:3000/update-student", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({ id, name })
+                });
 
-<!-- JS -->
-<script src="/js/leaveform.js"></script>
-</body>
-</html>
+                const data = await res.json();
+
+                document.getElementById("result").innerText = data.message || data.error;
+            }
+        </script>
+        ```
+
+    </body>
+
+    </html>

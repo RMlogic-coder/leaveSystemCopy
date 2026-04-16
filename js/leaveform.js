@@ -62,6 +62,27 @@ function getLoggedInStudentRoll() {
     }
 }
 
+function buildStudentApiHeaders(includeJsonContentType = false) {
+    const headers = {};
+    const apiKey = String(sessionStorage.getItem("apiAccessKey") || localStorage.getItem("apiAccessKey") || "change-me").trim();
+    if (includeJsonContentType) headers["Content-Type"] = "application/json";
+    headers["x-user-role"] = "student";
+    if (apiKey) headers["x-api-key"] = apiKey;
+
+    try {
+        const raw = sessionStorage.getItem("loggedInUser");
+        const parsed = raw ? JSON.parse(raw) : null;
+        const userId = String(parsed && (parsed.rollNumber || parsed.username) || "").trim();
+        const userName = String(parsed && (parsed.displayName || parsed.username || parsed.rollNumber) || "").trim();
+        if (userId) headers["x-user-id"] = userId;
+        if (userName) headers["x-user-name"] = userName;
+    } catch {
+        // Use only required auth headers when session payload is unavailable.
+    }
+
+    return headers;
+}
+
 function calculateLeaveDays() {
     const startDateInput = field("startDate");
     const endDateInput = field("endDate");
@@ -103,7 +124,7 @@ function enforceStartDateMin() {
 }
 
 function loadStudentPrefill(rollNumber) {
-    return fetch(`/api/student-master/${encodeURIComponent(rollNumber)}`)
+    return fetch(`/api/student-master/${encodeURIComponent(rollNumber)}`, { headers: buildStudentApiHeaders() })
         .then(r => r.json().then(data => ({ ok: r.ok, data })))
         .then(({ ok, data }) => {
             if (!ok) throw new Error(data && data.error ? data.error : "Failed to load student data");
@@ -159,7 +180,7 @@ function loadStudentDashboardStats(rollNumber) {
     const normalizedRoll = String(rollNumber || "").trim().toUpperCase();
     if (!normalizedRoll) return Promise.resolve();
 
-    return fetch("/api/student-leaves")
+    return fetch("/api/student-leaves", { headers: buildStudentApiHeaders() })
         .then(r => r.json().then(data => ({ ok: r.ok, data })))
         .then(({ ok, data }) => {
             if (!ok) throw new Error(data && data.error ? data.error : "Failed to load student leave data");
@@ -222,7 +243,7 @@ function handleLeaveSubmit(e) {
 
     fetch("/api/submit-leave", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: buildStudentApiHeaders(true),
         body: JSON.stringify({
             rollNumber: rollNumber.trim(),
             parentRelation,

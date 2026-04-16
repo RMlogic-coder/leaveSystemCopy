@@ -69,6 +69,15 @@ function parseApiResponse(response) {
         });
 }
 
+function apiHeaders(includeJsonContentType = false) {
+    const headers = {};
+    const apiKey = String(sessionStorage.getItem("apiAccessKey") || localStorage.getItem("apiAccessKey") || "change-me").trim();
+    if (includeJsonContentType) headers["Content-Type"] = "application/json";
+    headers["x-user-role"] = "mess";
+    if (apiKey) headers["x-api-key"] = apiKey;
+    return headers;
+}
+
 function statusBadge(status) {
     const s = normStatus(status);
     if (s === "refunded") {
@@ -104,8 +113,8 @@ document.addEventListener("DOMContentLoaded", function () {
 
 function loadAll() {
     Promise.all([
-        fetch("/api/mess-refunds").then(r => { if (!r.ok) throw new Error("Failed refunds"); return r.json(); }),
-        fetch("/api/mess-semester-rates").then(r => { if (!r.ok) throw new Error("Failed rates"); return r.json(); })
+        fetch("/api/mess-refunds", { headers: apiHeaders() }).then(r => { if (!r.ok) throw new Error("Failed refunds"); return r.json(); }),
+        fetch("/api/mess-semester-rates", { headers: apiHeaders() }).then(r => { if (!r.ok) throw new Error("Failed rates"); return r.json(); })
     ])
         .then(([rows, model]) => {
             if (!Array.isArray(rows)) throw new Error("Invalid refund payload");
@@ -253,7 +262,7 @@ function saveRefund(refundStatus) {
     actionInFlight = true;
     fetch("/api/mess-update-refund", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders(true),
         body: JSON.stringify({
             index: currentModalRow._index,
             refundStatus,
@@ -314,7 +323,7 @@ function saveSemesterRate() {
 
     fetch("/api/mess-semester-rates", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders(true),
         body: JSON.stringify({ period, rate })
     })
         .then(parseApiResponse)
@@ -341,7 +350,7 @@ function togglePeriodLock() {
 
     fetch("/api/mess-rate-lock", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders(true),
         body: JSON.stringify({ period, locked: !current })
     })
         .then(parseApiResponse)

@@ -41,23 +41,92 @@ function getLoggedInStudentRoll() {
         const raw = sessionStorage.getItem("loggedInUser");
         if (!raw) return "";
         const parsed = JSON.parse(raw);
-        if (!parsed || parsed.role !== "student") return "";
-        return String(parsed.rollNumber || "").trim().toUpperCase();
+        if (!parsed || typeof parsed !== "object") return "";
+
+        const role = String(parsed.role || "").trim().toLowerCase();
+        const rollFromSession = String(parsed.rollNumber || parsed.username || "").trim().toUpperCase();
+
+        if (role === "student" && rollFromSession) return rollFromSession;
+        if (rollFromSession && /^[A-Z]{2,4}\d{2}[A-Z]\d{3,4}$/.test(rollFromSession)) return rollFromSession;
+        return "";
     } catch {
         return "";
     }
 }
 
+function getRollFromUrl() {
+    try {
+        const params = new URLSearchParams(window.location.search);
+        return String(params.get("rollNumber") || "").trim().toUpperCase();
+    } catch {
+        return "";
+    }
+}
+
+function buildStudentApiHeaders() {
+    const headers = { "x-user-role": "student" };
+    const apiKey = String(sessionStorage.getItem("apiAccessKey") || localStorage.getItem("apiAccessKey") || "change-me").trim();
+    if (apiKey) headers["x-api-key"] = apiKey;
+    try {
+        const raw = sessionStorage.getItem("loggedInUser");
+        const parsed = raw ? JSON.parse(raw) : null;
+        const userId = String(parsed && (parsed.rollNumber || parsed.username) || "").trim();
+        const userName = String(parsed && (parsed.displayName || parsed.username || parsed.rollNumber) || "").trim();
+        if (userId) headers["x-user-id"] = userId;
+        if (userName) headers["x-user-name"] = userName;
+    } catch {
+        // Use only required auth headers when session payload is unavailable.
+    }
+    return headers;
+}
+
+let messConstraints = {
+    minDaysForRefund: 3,
+    amountPerDay: 200
+};
+
+function loadMessConstraints() {
+    return fetch("/api/mess-constraints", { headers: buildStudentApiHeaders() })
+        .then(res => {
+            if (!res.ok) {
+                console.warn(`Mess constraints unavailable (status ${res.status}); using defaults.`);
+                return null;
+            }
+            return res.json();
+        })
+        .then(data => {
+            if (data && typeof data === "object") {
+                messConstraints = {
+                    minDaysForRefund: Number(data.minDaysForRefund) || 3,
+                    amountPerDay: Number(data.amountPerDay) || 200
+                };
+            }
+        })
+        .catch(err => {
+            console.error("Error loading mess constraints (using defaults):", err);
+            messConstraints = { minDaysForRefund: 3, amountPerDay: 200 };
+        });
+}
+
+    function getRefundRuleForItem(item) {
+        const minDays = Number(item && item.refundRuleMinDays);
+        const amountPerDay = Number(item && item.refundRuleAmountPerDay);
+        return {
+            minDaysForRefund: Number.isFinite(minDays) && minDays >= 0 ? minDays : 3,
+            amountPerDay: Number.isFinite(amountPerDay) && amountPerDay >= 0 ? amountPerDay : 200
+        };
+    }
+
 // ===== Fetch and populate the table =====
 document.addEventListener("DOMContentLoaded", function () {
-    const loggedRoll = getLoggedInStudentRoll();
+    const loggedRoll = getLoggedInStudentRoll() || getRollFromUrl();
     if (!loggedRoll) {
         const tableBody = document.getElementById("clientTableBody");
         if (tableBody) {
             tableBody.innerHTML = `
                 <tr>
                     <td colspan="11" style="text-align:center; color:red; padding:30px;">
-                        Student session missing. Please login again.
+                        Student session missing or invalid. Please login again.
                     </td>
                 </tr>
             `;
@@ -65,7 +134,8 @@ document.addEventListener("DOMContentLoaded", function () {
         return;
     }
 
-    fetch("/api/student-leaves")
+    loadMessConstraints()
+        .then(() => fetch("/api/student-leaves", { headers: buildStudentApiHeaders() }))
         .then(response => {
             if (!response.ok) throw new Error("Failed to load student leave data");
             return response.json();
@@ -73,10 +143,13 @@ document.addEventListener("DOMContentLoaded", function () {
         .then(data => {
             const tableBody = document.getElementById("clientTableBody");
             if (!tableBody) return;
-            if (!Array.isArray(data)) throw new Error("Invalid leave data payload");
+            const rows = Array.isArray(data) ? data : (data && Array.isArray(data.rows) ? data.rows : null);
+            if (!rows) throw new Error("Invalid leave data payload");
             tableBody.innerHTML = "";
 
-            const ownRows = data.filter((item) => String(item && item.rollNumber || "").trim().toUpperCase() === loggedRoll);
+            const ownRows = rows
+                .filter((item) => String(item && item.rollNumber || "").trim().toUpperCase() === loggedRoll)
+                .sort((a, b) => String(b && b.startDate || "").localeCompare(String(a && a.startDate || "")));
 
             if (ownRows.length === 0) {
                 tableBody.innerHTML = `
@@ -98,6 +171,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 const isFullyApproved = statusLower === "approved";
                 const isRejected = statusLower === "rejected";
                 const totalDays = Number(item.totalDays) || 0;
+                    const rule = getRefundRuleForItem(item);
                 const apiRefundAmount = Number(item.refundAmount);
                 const apiRefundStatus = String(item.refundStatus || "").trim();
 
@@ -105,8 +179,8 @@ document.addEventListener("DOMContentLoaded", function () {
                 let refundStatus = "—";
 
                 if (isFullyApproved) {
-                    if (totalDays > 3) {
-                        refundAmount = Number.isFinite(apiRefundAmount) && apiRefundAmount >= 0 ? apiRefundAmount : 200 * totalDays;
+                    if (totalDays > rule.minDaysForRefund) {
+                        refundAmount = Number.isFinite(apiRefundAmount) && apiRefundAmount >= 0 ? apiRefundAmount : rule.amountPerDay * totalDays;
                         refundStatus = apiRefundStatus || "Processing";
                     } else {
                         refundAmount = 0;

@@ -66,6 +66,56 @@ function normStatus(s) {
 let allRequests = [];
 let currentFilter = "all";
 
+let wardenSession = {
+    approverId: "",
+    approverName: "Warden",
+    hostelName: ""
+};
+
+const WARDEN_PROFILES = {
+    NBV101: { name: "Natesh", hostelName: "Bheema" },
+    PS101: { name: "Priyanka", hostelName: "Krishna" },
+    P101: { name: "Pradhan", hostelName: "Federal" },
+    JT101: { name: "Jhanvi", hostelName: "Tungabadra" }
+};
+
+function looksLikeWardenId(value) {
+    return /^[A-Z]{2,4}\d{2}[A-Z]\d{3,4}$/.test(String(value || "").trim().toUpperCase());
+}
+
+function getLoggedInWardenSession() {
+    try {
+        const raw = sessionStorage.getItem("loggedInUser");
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (!parsed || parsed.role !== "warden") return null;
+        return parsed;
+    } catch {
+        return null;
+    }
+}
+
+function resolveWardenSession(session) {
+    const approverId = String((session && (session.approverId || session.username)) || "").trim().toUpperCase();
+    const profile = WARDEN_PROFILES[approverId] || {};
+    const rawName = String((session && (session.approverName || session.displayName)) || "").trim();
+    const approverName = (rawName && !looksLikeWardenId(rawName))
+        ? rawName
+        : (profile.name || approverId || "Warden");
+    const hostelName = String((session && session.hostelName) || profile.hostelName || "").trim();
+
+    return { approverId, approverName, hostelName };
+}
+
+function apiHeaders() {
+    const apiKey = String(sessionStorage.getItem("apiAccessKey") || localStorage.getItem("apiAccessKey") || "change-me").trim();
+    const headers = { "x-user-role": "warden" };
+    if (apiKey) headers["x-api-key"] = apiKey;
+    if (wardenSession.approverId) headers["x-user-id"] = wardenSession.approverId;
+    if (wardenSession.approverName) headers["x-user-name"] = wardenSession.approverName;
+    return headers;
+}
+
 // Determine the warden-level outcome for a request.
 // "Forwarded" = warden approved and sent to FA. "Rejected" = warden rejected.
 function wardenOutcome(item) {
@@ -82,8 +132,13 @@ function isProcessed(item) {
 // ===== Load Data =====
 document.addEventListener("DOMContentLoaded", function () {
     const historyTableBody = document.getElementById("historyTableBody");
+    const session = getLoggedInWardenSession();
 
-    fetch("/api/warden-leave-requests")
+    if (session) {
+        wardenSession = resolveWardenSession(session);
+    }
+
+    fetch("/api/warden-leave-requests", { headers: apiHeaders() })
         .then(res => {
             if (!res.ok) throw new Error("Failed to load leave requests");
             return res.json();
