@@ -10,7 +10,7 @@
     let students = [];
     let editingRoll = null;
     let hostelMapping = new Map();
-    let approversByRole = { warden: [], fa: [] };
+    let approversByRole = { admin: [], mess: [], warden: [], fa: [], student: [] };
     let currentApproverRole = "warden";
     let approverSearchQuery = "";
     let pendingDelete = null;
@@ -45,11 +45,13 @@
     const menuToggle = document.getElementById("menuToggle");
 
     const statTotal = document.getElementById("statTotal");
+    const statAdmins = document.getElementById("statAdmins");
+    const statMess = document.getElementById("statMess");
     const statHostels = document.getElementById("statHostels");
     const statBranches = document.getElementById("statBranches");
     const statWardens = document.getElementById("statWardens");
     const statFas = document.getElementById("statFas");
-    const statApproverType = document.getElementById("statApproverType");
+    const statStudents = document.getElementById("statStudents");
 
     const fHostelName = document.getElementById("fHostelName");
     const fWarden = document.getElementById("fWarden");
@@ -128,8 +130,16 @@
             renderApproverTable();
         });
     }
-    document.getElementById("btnWardenApprovers").addEventListener("click", () => setApproverRole("warden"));
-    document.getElementById("btnFaApprovers").addEventListener("click", () => setApproverRole("fa"));
+    const btnAdminApprovers = document.getElementById("btnAdminApprovers");
+    const btnMessApprovers = document.getElementById("btnMessApprovers");
+    const btnWardenApprovers = document.getElementById("btnWardenApprovers");
+    const btnFaApprovers = document.getElementById("btnFaApprovers");
+    const btnStudentApprovers = document.getElementById("btnStudentApprovers");
+    if (btnAdminApprovers) btnAdminApprovers.addEventListener("click", () => setApproverRole("admin"));
+    if (btnMessApprovers) btnMessApprovers.addEventListener("click", () => setApproverRole("mess"));
+    if (btnWardenApprovers) btnWardenApprovers.addEventListener("click", () => setApproverRole("warden"));
+    if (btnFaApprovers) btnFaApprovers.addEventListener("click", () => setApproverRole("fa"));
+    if (btnStudentApprovers) btnStudentApprovers.addEventListener("click", () => setApproverRole("student"));
     if (approverForm) approverForm.addEventListener("submit", handleApproverSubmit);
     if (aRole) aRole.addEventListener("change", () => syncApproverFormFields());
 
@@ -568,7 +578,7 @@
 
     function normalizeApproverRole(role) {
         const normalized = String(role || "").trim().toLowerCase();
-        return normalized === "fa" || normalized === "warden" ? normalized : "";
+        return ["admin", "mess", "fa", "warden", "student"].includes(normalized) ? normalized : "";
     }
 
     function setFieldError(id, msg) {
@@ -623,7 +633,13 @@
     }
 
     function approverRoleLabel(role) {
-        return role === "fa" ? "Faculty Advisor" : "Warden";
+        const normalized = normalizeApproverRole(role);
+        if (normalized === "admin") return "Admin";
+        if (normalized === "mess") return "Mess";
+        if (normalized === "fa") return "Faculty Advisor";
+        if (normalized === "warden") return "Warden";
+        if (normalized === "student") return "Student";
+        return "User";
     }
 
     function getApproverList(role) {
@@ -631,21 +647,29 @@
     }
 
     function updateApproverStats() {
+        if (statAdmins) statAdmins.textContent = String(getApproverList("admin").length);
+        if (statMess) statMess.textContent = String(getApproverList("mess").length);
         if (statWardens) statWardens.textContent = String(getApproverList("warden").length);
         if (statFas) statFas.textContent = String(getApproverList("fa").length);
-        if (statApproverType) statApproverType.textContent = approverRoleLabel(currentApproverRole);
+        if (statStudents) statStudents.textContent = String(getApproverList("student").length);
     }
 
     function updateApproverTabs() {
+        const adminBtn = document.getElementById("btnAdminApprovers");
+        const messBtn = document.getElementById("btnMessApprovers");
         const wardenBtn = document.getElementById("btnWardenApprovers");
         const faBtn = document.getElementById("btnFaApprovers");
+        const studentBtn = document.getElementById("btnStudentApprovers");
+        if (adminBtn) adminBtn.classList.toggle("active", currentApproverRole === "admin");
+        if (messBtn) messBtn.classList.toggle("active", currentApproverRole === "mess");
         if (wardenBtn) wardenBtn.classList.toggle("active", currentApproverRole === "warden");
         if (faBtn) faBtn.classList.toggle("active", currentApproverRole === "fa");
+        if (studentBtn) studentBtn.classList.toggle("active", currentApproverRole === "student");
         updateApproverStats();
     }
 
     function setApproverRole(role) {
-        const normalized = role === "fa" ? "fa" : "warden";
+        const normalized = normalizeApproverRole(role) || "warden";
         currentApproverRole = normalized;
         approverSearchQuery = "";
         if (approverSearchInput) approverSearchInput.value = "";
@@ -682,7 +706,7 @@
         if (approverForm) approverForm.reset();
         if (aRole) aRole.value = currentApproverRole;
         if (aId) aId.disabled = false;
-        if (approverFormTitle) approverFormTitle.textContent = "Add New Approver";
+        if (approverFormTitle) approverFormTitle.textContent = "Add New User";
         syncApproverFormFields();
         tableView.style.display = "none";
         formView.style.display = "none";
@@ -714,7 +738,7 @@
         const list = getApproverList(currentApproverRole);
         if (!approverSearchQuery) return list;
         return list.filter((item) => {
-            return [item.id, item.name].join(" ").toLowerCase().includes(approverSearchQuery);
+            return [item.id, item.username, item.name, item.displayName, item.role].join(" ").toLowerCase().includes(approverSearchQuery);
         });
     }
 
@@ -733,14 +757,22 @@
         approverBody.innerHTML = rows.map((item) => `
             <tr>
                 <td><span class="approver-type-badge">${esc(approverRoleLabel(item.role))}</span></td>
-                <td>${esc(item.id)}</td>
-                <td>${esc(item.name)}</td>
+                <td>${esc(item.id || item.username)}</td>
+                <td>${esc(item.name || item.displayName)}</td>
                 <td>${esc(item.role === "warden" ? (item.hostelName || "") : "")}</td>
+                <td>${item.active === false ? "Inactive" : "Active"}</td>
                 <td class="actions-cell">
-                    <button class="btn-icon btn-delete" title="Delete" data-role="${esc(item.role)}" data-id="${esc(item.id)}" data-name="${esc(item.name)}"><i class="fa-solid fa-trash"></i></button>
+                    <button class="btn-icon btn-reset-password" title="Reset Password" data-role="${esc(item.role)}" data-id="${esc(item.id || item.username)}" data-name="${esc(item.name || item.displayName)}"><i class="fa-solid fa-key"></i></button>
+                    <button class="btn-icon btn-delete" title="Delete" data-role="${esc(item.role)}" data-id="${esc(item.id || item.username)}" data-name="${esc(item.name || item.displayName)}"><i class="fa-solid fa-trash"></i></button>
                 </td>
             </tr>
         `).join("");
+
+        approverBody.querySelectorAll(".btn-reset-password").forEach((btn) => {
+            btn.addEventListener("click", () => {
+                openResetApproverPasswordPrompt(btn.dataset.role, btn.dataset.id, btn.dataset.name);
+            });
+        });
 
         approverBody.querySelectorAll(".btn-delete").forEach((btn) => {
             btn.addEventListener("click", () => {
@@ -751,17 +783,16 @@
 
     async function loadApproverData() {
         try {
-            const [wardenRes, faRes] = await Promise.all([
-                fetch(`/api/approvers?role=warden`, { headers: buildApiHeaders() }),
-                fetch(`/api/approvers?role=fa`, { headers: buildApiHeaders() })
-            ]);
-
-            if (!wardenRes.ok) throw new Error("Failed to load warden approvers");
-            if (!faRes.ok) throw new Error("Failed to load FA approvers");
+            const res = await fetch(`/api/approvers`, { headers: buildApiHeaders() });
+            if (!res.ok) throw new Error("Failed to load users");
+            const data = await res.json();
 
             approversByRole = {
-                warden: await wardenRes.json(),
-                fa: await faRes.json()
+                admin: data.admins || [],
+                mess: data.mess || [],
+                warden: data.wardens || [],
+                fa: data.fas || [],
+                student: data.students || []
             };
 
             updateApproverTabs();
@@ -785,6 +816,45 @@
         deleteModal.style.display = "flex";
     }
 
+    async function openResetApproverPasswordPrompt(role, id, name) {
+        const normalizedRole = normalizeApproverRole(role);
+        const firstPassword = window.prompt(`Enter a new password for ${name} (${id})`);
+        if (firstPassword == null) return;
+
+        const newPassword = firstPassword.trim();
+        if (!newPassword) {
+            showApproverFormError("Password cannot be empty");
+            return;
+        }
+
+        const confirmPassword = window.prompt(`Confirm the new password for ${name} (${id})`);
+        if (confirmPassword == null) return;
+        if (confirmPassword.trim() !== newPassword) {
+            showApproverFormError("Passwords do not match");
+            return;
+        }
+
+        try {
+            const res = await fetch(`/api/approvers/${encodeURIComponent(normalizedRole)}/${encodeURIComponent(id)}/password`, {
+                method: "POST",
+                headers: buildApiHeaders(),
+                body: JSON.stringify({ newPassword })
+            });
+            const json = await res.json();
+            if (!res.ok) {
+                showApproverFormError(json.error || "Failed to update password");
+                return;
+            }
+
+            showApproverFormSuccess(`${approverRoleLabel(normalizedRole)} password updated successfully`);
+            window.alert("Password has been updated successfully.");
+            await loadApproverData();
+            renderApproverTable();
+        } catch {
+            showApproverFormError("Network error. Please try again.");
+        }
+    }
+
     async function handleApproverSubmit(e) {
         e.preventDefault();
         clearApproverErrors();
@@ -796,8 +866,8 @@
         const password = aPassword ? aPassword.value.trim() : "";
 
         if (!role) return showApproverFormError("Role is required");
-        if (!id) return showApproverFormError("ID is required");
-        if (!name) return showApproverFormError("Name is required");
+        if (!id) return showApproverFormError("Username / ID is required");
+        if (!name) return showApproverFormError("Display name is required");
         if (role === "warden" && !hostelName) return showApproverFormError("Hostel is required for warden");
         if (!password) return showApproverFormError("Password is required");
 
@@ -805,7 +875,7 @@
             const res = await fetch("/api/approvers", {
                 method: "POST",
                 headers: buildApiHeaders(),
-                body: JSON.stringify({ role, id, name, password, hostelName: role === "warden" ? hostelName : "" })
+                body: JSON.stringify({ role, id, username: id, name, displayName: name, password, hostelName: role === "warden" ? hostelName : "", rollNumber: role === "student" ? id : "" })
             });
             const json = await res.json();
             if (!res.ok) {
@@ -835,6 +905,9 @@
         if (aHostelName) {
             aHostelName.required = isWarden;
             if (!isWarden) aHostelName.value = "";
+        }
+        if (aId) {
+            aId.placeholder = role === "student" ? "e.g. CS25B1001" : role === "admin" ? "e.g. admin" : role === "mess" ? "e.g. mess" : "e.g. JT101";
         }
         if (!isWarden && aRole) {
             aRole.value = role;

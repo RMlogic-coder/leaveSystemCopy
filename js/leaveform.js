@@ -25,6 +25,8 @@ document.addEventListener("click", function (e) {
 });
 
 let submitting = false;
+let overlapCandidateLeaves = [];
+const OVERLAP_BLOCKING_STATUSES = new Set(["pending warden approval", "pending fa approval", "approved"]);
 
 function field(id) {
     return document.getElementById(id);
@@ -42,12 +44,22 @@ function setContent(id, value) {
     el.textContent = value == null ? "" : String(value);
 }
 
-function setMessage(text, color) {
+function setMessage(text, color, kind = "default") {
     const msgEl = field("formMessage");
     if (!msgEl) return;
     msgEl.textContent = text;
     msgEl.style.color = color;
     msgEl.style.display = "block";
+    msgEl.dataset.messageKind = kind;
+}
+
+function clearMessageIfKind(kind) {
+    const msgEl = field("formMessage");
+    if (!msgEl) return;
+    if (msgEl.dataset.messageKind !== kind) return;
+    msgEl.textContent = "";
+    msgEl.style.display = "none";
+    delete msgEl.dataset.messageKind;
 }
 
 function getLoggedInStudentRoll() {
@@ -170,6 +182,74 @@ function normalizeLeaveStatus(value) {
     return String(value || "").trim().toLowerCase();
 }
 
+function normalizeIsoDateKey(value) {
+    const raw = String(value || "").trim();
+    const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+    return match ? match[1] : "";
+}
+
+function rangesOverlapAllowingSameDayTouch(startA, endA, startB, endB) {
+    if (!startA || !endA || !startB || !endB) return false;
+    return startA < endB && endA > startB;
+}
+
+function findDateOverlapConflict(startDate, endDate) {
+    const normalizedStart = normalizeIsoDateKey(startDate);
+    const normalizedEnd = normalizeIsoDateKey(endDate);
+    if (!normalizedStart || !normalizedEnd) return null;
+
+    return overlapCandidateLeaves.find((row) => {
+        const existingStart = normalizeIsoDateKey(row && row.startDate);
+        const existingEnd = normalizeIsoDateKey(row && row.endDate);
+        return rangesOverlapAllowingSameDayTouch(existingStart, existingEnd, normalizedStart, normalizedEnd);
+    }) || null;
+}
+
+function showOrClearOverlapWarning() {
+    const startDate = (field("startDate") || {}).value || "";
+    const endDate = (field("endDate") || {}).value || "";
+    if (!startDate || !endDate) {
+        clearMessageIfKind("overlap-warning");
+        return;
+    }
+
+    const conflict = findDateOverlapConflict(startDate, endDate);
+    if (!conflict) {
+        clearMessageIfKind("overlap-warning");
+        return;
+    }
+
+    const conflictStart = normalizeIsoDateKey(conflict.startDate) || "existing";
+    const conflictEnd = normalizeIsoDateKey(conflict.endDate) || "leave";
+    setMessage(`Warning: selected dates overlap an existing leave (${conflictStart} to ${conflictEnd}). Submission will be blocked.`, "#ff9800", "overlap-warning");
+}
+
+function loadOverlapCandidateLeaves(rollNumber) {
+    const normalizedRoll = String(rollNumber || "").trim().toUpperCase();
+    if (!normalizedRoll) {
+        overlapCandidateLeaves = [];
+        return Promise.resolve();
+    }
+
+    return fetch("/api/student-leaves", { headers: buildStudentApiHeaders() })
+        .then(r => r.json().then(data => ({ ok: r.ok, data })))
+        .then(({ ok, data }) => {
+            if (!ok) throw new Error(data && data.error ? data.error : "Failed to load existing leaves");
+            if (!Array.isArray(data)) throw new Error("Invalid leave data payload");
+
+            overlapCandidateLeaves = data.filter((row) => {
+                const roll = String(row && row.rollNumber || "").trim().toUpperCase();
+                const status = normalizeLeaveStatus(row && row.status);
+                const start = normalizeIsoDateKey(row && row.startDate);
+                const end = normalizeIsoDateKey(row && row.endDate);
+                if (roll !== normalizedRoll) return false;
+                if (!OVERLAP_BLOCKING_STATUSES.has(status)) return false;
+                return Boolean(start && end);
+            });
+            showOrClearOverlapWarning();
+        });
+}
+
 function updateDashboardStat(id, value) {
     const el = field(id);
     if (!el) return;
@@ -226,6 +306,10 @@ function handleLeaveSubmit(e) {
 
     if (start && start <= today) errors.push("Start date must be after current date.");
     if (start && end && end <= start) errors.push("End date must be after start date.");
+
+    const overlapConflict = findDateOverlapConflict(startDate, endDate);
+    if (overlapConflict) errors.push("Leave already exists for this date");
+
     if (!totalDays || Number(totalDays) < 1) errors.push("Total days must be at least 1.");
     if (!reason.trim()) errors.push("Reason is required.");
 
@@ -289,8 +373,12 @@ document.addEventListener("DOMContentLoaded", function () {
             nextDay.setDate(nextDay.getDate() + 1);
             if (endDateInput) endDateInput.min = toIsoDate(nextDay);
         }
+        showOrClearOverlapWarning();
     });
-    if (endDateInput) endDateInput.addEventListener("change", calculateLeaveDays);
+    if (endDateInput) endDateInput.addEventListener("change", function () {
+        calculateLeaveDays();
+        showOrClearOverlapWarning();
+    });
 
     enforceStartDateMin();
 
@@ -319,5 +407,9 @@ document.addEventListener("DOMContentLoaded", function () {
         console.error("Dashboard stats error:", err);
         updateDashboardStat("dayCountValue", "--");
         updateDashboardStat("pendingRefundValue", "--");
+    });
+
+    loadOverlapCandidateLeaves(initialRoll).catch(err => {
+        console.error("Overlap preload error:", err);
     });
 });

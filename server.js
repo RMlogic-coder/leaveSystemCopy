@@ -1,6 +1,7 @@
 const express = require("express");
 const path = require("path");
 require("dotenv").config();
+const bcrypt = require("bcryptjs");
 const { initializeFirebaseAdmin, isFirebaseReady, readFromFirebase, writeToFirebase } = require("./firebaseAdmin");
 const { isConfigured: isPostgresConfigured, readStore: readPostgresStore, writeStore: writePostgresStore, healthCheck: postgresHealthCheck } = require("./db/postgresStore");
 
@@ -44,6 +45,20 @@ const WARDEN_TRANSITIONS = {
 const ALLOWED_REFUND_STATUSES = ["Awaiting Approval", "Processing", "Refunded", "No Refund"];
 const ALLOWED_RATE_PERIODS = ["even2026", "odd2026", "even2025", "odd2025"];
 const ALLOWED_ROLES = ["admin", "fa", "warden", "mess", "student"];
+const UNIFIED_CREDENTIAL_ROLES = ["admin", "mess", "fa", "warden", "student"];
+const AUTH_REDIRECT_BY_ROLE = {
+    admin: "/pages/admin/admin.html",
+    mess: "/pages/mess/mess_dashboard.html",
+    fa: "/pages/fa/fa_dashboard.html",
+    warden: "/pages/warden/warden_dashboard.html",
+    student: "/pages/student/student.html"
+};
+const DEFAULT_SEEDED_CREDENTIALS = [
+    { username: "admin", displayName: "Admin", role: "admin", password: "Admin123" },
+    { username: "mess", displayName: "Mess", role: "mess", password: "Mess123" }
+];
+const DEFAULT_STUDENT_PASSWORD = "1234";
+const OVERLAP_BLOCKING_LEAVE_STATUSES = new Set(["pending warden approval", "pending fa approval", "approved"]);
 
 const ROUTE_ROLE_RULES = [
     { method: "GET", path: "/api/health/db", roles: ["admin", "fa", "warden", "mess", "student"] },
@@ -56,6 +71,7 @@ const ROUTE_ROLE_RULES = [
     { method: "GET", path: "/api/approvers", roles: ["admin"] },
     { method: "POST", path: "/api/approvers", roles: ["admin"] },
     { method: "DELETE", path: "/api/approvers/:role/:id", roles: ["admin"] },
+    { method: "POST", path: "/api/approvers/:role/:id/password", roles: ["admin"] },
 
     { method: "GET", path: "/api/leave-requests", roles: ["fa"] },
     { method: "POST", path: "/api/update-leave", roles: ["fa"] },
@@ -413,31 +429,293 @@ async function writeMessConstraintsStore(constraints) {
     return writeObjectStore(MESS_CONSTRAINTS_FILE, constraints);
 }
 
-function normalizeApproverRole(role) {
+let credentialsBootstrapPromise = null;
+
+function normalizeCredentialRole(role) {
     const normalized = normText(role).toLowerCase();
-    return normalized === "fa" || normalized === "warden" ? normalized : "";
+    return UNIFIED_CREDENTIAL_ROLES.includes(normalized) ? normalized : "";
 }
 
-function normalizeCredentialsStoreData(data = {}) {
-    const normalizeRows = (rows, role) => (Array.isArray(rows) ? rows : []).map((row) => ({
-        ...row,
-        id: normIdentityId(row && row.id),
-        name: normText(row && row.name),
-        password: normText(row && row.password),
-        role: normalizeApproverRole((row && row.role) || role),
-        active: row && row.active === false ? false : true
-    }));
+function normalizeApproverRole(role) {
+    return normalizeCredentialRole(role);
+}
+
+function normalizeLoginKey(value) {
+    return normText(value).toLowerCase();
+}
+
+function normalizeCredentialUser(row = {}, fallbackRole = "") {
+    const role = normalizeCredentialRole(row.role || fallbackRole);
+    const username = normText(row.username || row.id || row.rollNumber || row.approverId || row.email || "");
+    const displayName = normText(row.displayName || row.name || row.fullName || username);
+    const passwordHash = normText(row.passwordHash || "");
+    const password = normText(row.password || "");
+    const active = row.active === false ? false : true;
+    const hostelName = role === "warden" ? normalizeHostelName(row.hostelName) : "";
+    const approverId = role === "warden" || role === "fa" ? normIdentityId(row.approverId || row.id || username) : "";
+    const rollNumber = role === "student" ? normIdentityId(row.rollNumber || row.id || username) : "";
+    const timestamp = normText(row.updatedAt || row.createdAt || "");
 
     return {
-        wardens: normalizeRows(data.wardens, "warden"),
-        fas: normalizeRows(data.fas, "fa")
+        username,
+        id: normText(row.id || username) || username,
+        name: displayName || username,
+        displayName: displayName || username,
+        role,
+        active,
+        passwordHash,
+        password,
+        hostelName,
+        approverId,
+        rollNumber,
+        forcePasswordChange: Boolean(row.forcePasswordChange),
+        createdAt: normText(row.createdAt || timestamp),
+        updatedAt: normText(row.updatedAt || timestamp)
     };
 }
 
+function credentialUserKey(row) {
+    return `${normalizeCredentialRole(row && row.role)}|${normalizeLoginKey(row && row.username)}`;
+}
+
+function dedupeCredentialUsers(users) {
+    const map = new Map();
+    for (const user of users) {
+        if (!user || !user.role || !normalizeLoginKey(user.username)) continue;
+        map.set(credentialUserKey(user), user);
+    }
+    return Array.from(map.values());
+}
+
+function normalizeCredentialsStoreData(data = {}) {
+    const legacyUsers = [];
+
+    if (Array.isArray(data.users)) {
+        legacyUsers.push(...data.users);
+    } else {
+        for (const row of Array.isArray(data.admins) ? data.admins : []) legacyUsers.push({ ...row, role: "admin" });
+        for (const row of Array.isArray(data.mess) ? data.mess : []) legacyUsers.push({ ...row, role: "mess" });
+        for (const row of Array.isArray(data.wardens) ? data.wardens : []) legacyUsers.push({ ...row, role: "warden" });
+        for (const row of Array.isArray(data.fas) ? data.fas : []) legacyUsers.push({ ...row, role: "fa" });
+        for (const row of Array.isArray(data.students) ? data.students : []) legacyUsers.push({ ...row, role: "student" });
+    }
+
+    const users = dedupeCredentialUsers(legacyUsers.map((row) => normalizeCredentialUser(row)));
+    const grouped = {
+        users,
+        admins: users.filter((user) => user.role === "admin"),
+        mess: users.filter((user) => user.role === "mess"),
+        wardens: users.filter((user) => user.role === "warden"),
+        fas: users.filter((user) => user.role === "fa"),
+        students: users.filter((user) => user.role === "student")
+    };
+
+    return grouped;
+}
+
+async function hashCredentialPassword(password) {
+    return bcrypt.hash(normText(password), 10);
+}
+
+async function prepareCredentialsStoreForWrite(store = {}) {
+    const normalized = normalizeCredentialsStoreData(store);
+    const users = [];
+
+    for (const row of normalized.users) {
+        const passwordHash = normText(row.passwordHash);
+        const legacyPassword = normText(row.password);
+        const finalPasswordHash = passwordHash || (legacyPassword ? await hashCredentialPassword(legacyPassword) : "");
+
+        users.push({
+            username: normText(row.username),
+            id: normText(row.id || row.username),
+            name: normText(row.name || row.displayName || row.username),
+            displayName: normText(row.displayName || row.name || row.username),
+            role: normalizeCredentialRole(row.role),
+            active: row.active !== false,
+            passwordHash: finalPasswordHash,
+            hostelName: row.role === "warden" ? normalizeHostelName(row.hostelName) : "",
+            approverId: row.role === "warden" || row.role === "fa" ? normIdentityId(row.approverId || row.id || row.username) : "",
+            rollNumber: row.role === "student" ? normIdentityId(row.rollNumber || row.id || row.username) : "",
+            forcePasswordChange: Boolean(row.forcePasswordChange),
+            createdAt: normText(row.createdAt) || new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+        });
+    }
+
+    return { users };
+}
+
+async function ensureUnifiedCredentialsStore() {
+    if (!credentialsBootstrapPromise) {
+        credentialsBootstrapPromise = (async () => {
+            const { data, error } = await readObjectStore(CREDENTIALS_FILE, {});
+            if (error) {
+                return { data: { users: [] }, error };
+            }
+
+            const normalized = normalizeCredentialsStoreData(data);
+            let changed = !Array.isArray(data.users);
+
+            const existing = new Map(normalized.users.map((row) => [credentialUserKey(row), row]));
+
+            for (const seed of DEFAULT_SEEDED_CREDENTIALS) {
+                const key = credentialUserKey(seed);
+                if (!existing.has(key)) {
+                    normalized.users.push({
+                        username: seed.username,
+                        id: seed.username,
+                        name: seed.displayName,
+                        displayName: seed.displayName,
+                        role: seed.role,
+                        active: true,
+                        password: seed.password,
+                        createdAt: new Date().toISOString(),
+                        updatedAt: new Date().toISOString()
+                    });
+                    changed = true;
+                }
+            }
+
+            const { data: studentRows, error: studentErr } = await readStudentMasterStore();
+            if (!studentErr && Array.isArray(studentRows)) {
+                for (const row of studentRows) {
+                    const normalizedStudent = normalizeMasterStudent(row || {});
+                    if (!normalizedStudent.rollNumber) continue;
+                    const key = credentialUserKey({ username: normalizedStudent.rollNumber, role: "student" });
+                    if (existing.has(key) || normalized.users.some((user) => credentialUserKey(user) === key)) continue;
+
+                    normalized.users.push({
+                        username: normalizedStudent.rollNumber,
+                        id: normalizedStudent.rollNumber,
+                        name: normalizedStudent.name,
+                        displayName: normalizedStudent.name,
+                        role: "student",
+                        active: true,
+                        password: DEFAULT_STUDENT_PASSWORD,
+                        rollNumber: normalizedStudent.rollNumber,
+                        createdAt: new Date().toISOString(),
+                        updatedAt: new Date().toISOString()
+                    });
+                    changed = true;
+                }
+            }
+
+            const prepared = await prepareCredentialsStoreForWrite(normalized);
+            if (changed || JSON.stringify(data || {}) !== JSON.stringify(prepared)) {
+                await writeObjectStore(CREDENTIALS_FILE, prepared);
+            }
+
+            return { data: normalizeCredentialsStoreData(prepared), error: null };
+        })();
+    }
+
+    return credentialsBootstrapPromise;
+}
+
 async function readCredentialsStorePrimary() {
-    const { data, error } = await readObjectStore(CREDENTIALS_FILE, {});
-    if (error) return { data: { wardens: [], fas: [] }, error };
-    return { data: normalizeCredentialsStoreData(data), error: null };
+    const { data, error } = await ensureUnifiedCredentialsStore();
+    if (error) return { data: { users: [], wardens: [], fas: [], admins: [], mess: [], students: [] }, error };
+    return { data, error: null };
+}
+
+function getCredentialRows(store, role) {
+    const normalizedRole = normalizeCredentialRole(role);
+    if (!normalizedRole) return [];
+    return Array.isArray(store && store.users) ? store.users.filter((row) => normalizeCredentialRole(row.role) === normalizedRole) : [];
+}
+
+function sanitizeCredentialRow(row, hostelMap = null) {
+    const role = normalizeCredentialRole(row && row.role);
+    const base = {
+        username: normText(row && row.username),
+        id: normText(row && row.id || row && row.username),
+        name: normText(row && row.name || row && row.displayName || row && row.username),
+        displayName: normText(row && row.displayName || row && row.name || row && row.username),
+        role,
+        active: row && row.active !== false
+    };
+
+    if (role === "warden") {
+        return {
+            ...base,
+            hostelName: normalizeHostelName(row && row.hostelName) || findWardenHostelById({ users: [row] }, row && row.username, hostelMap) || ""
+        };
+    }
+
+    if (role === "student") {
+        return {
+            ...base,
+            rollNumber: normIdentityId(row && row.rollNumber || row && row.username)
+        };
+    }
+
+    return base;
+}
+
+function listCredentialUsersByRole(store, role, options = {}, hostelMap = null) {
+    const activeOnly = options.activeOnly !== false;
+    return getCredentialRows(store, role)
+        .map((row) => sanitizeCredentialRow(row, hostelMap))
+        .filter((row) => !activeOnly || row.active !== false);
+}
+
+function findCredentialUserIndex(store, role, username) {
+    const normalizedRole = normalizeCredentialRole(role);
+    const target = normalizeLoginKey(username);
+    if (!normalizedRole || !target) return -1;
+    return Array.isArray(store && store.users)
+        ? store.users.findIndex((row) => normalizeCredentialRole(row.role) === normalizedRole && normalizeLoginKey(row.username) === target)
+        : -1;
+}
+
+function findCredentialUserByRole(store, role, username, options = {}) {
+    const normalizedRole = normalizeCredentialRole(role);
+    const target = normalizeLoginKey(username);
+    const activeOnly = options.activeOnly !== false;
+    if (!normalizedRole || !target) return null;
+    return Array.isArray(store && store.users)
+        ? store.users.find((row) => normalizeCredentialRole(row.role) === normalizedRole && normalizeLoginKey(row.username) === target && (!activeOnly || row.active !== false)) || null
+        : null;
+}
+
+async function updateCredentialUserPassword(store, role, username, newPassword) {
+    const user = findCredentialUserByRole(store, role, username, { activeOnly: false });
+    if (!user) return null;
+
+    user.passwordHash = await hashCredentialPassword(newPassword);
+    user.password = "";
+    user.updatedAt = new Date().toISOString();
+    return user;
+}
+
+function credentialExistsEverywhere(store, username, role) {
+    const normalizedRole = normalizeCredentialRole(role);
+    const target = normalizeLoginKey(username);
+    if (!normalizedRole || !target) return false;
+    return Array.isArray(store && store.users)
+        ? store.users.some((row) => normalizeCredentialRole(row.role) === normalizedRole && normalizeLoginKey(row.username) === target)
+        : false;
+}
+
+async function verifyCredentialPassword(rawPassword, credential) {
+    const password = normText(rawPassword);
+    if (!password || !credential) return false;
+
+    const passwordHash = normText(credential.passwordHash);
+    if (passwordHash) {
+        return bcrypt.compare(password, passwordHash);
+    }
+
+    return normText(credential.password) === password;
+}
+
+async function upgradeCredentialsIfNeeded(store, user, rawPassword) {
+    if (!user || !normText(rawPassword) || normText(user.passwordHash)) return;
+    user.passwordHash = await hashCredentialPassword(rawPassword);
+    user.password = "";
+    user.updatedAt = new Date().toISOString();
+    await writeCredentialsObjectStore(store);
 }
 
 async function loadStudentMasterMapPrimary() {
@@ -452,74 +730,6 @@ async function loadStudentMasterMapPrimary() {
     return { map, error: null };
 }
 
-function getApproverRows(store, role) {
-    return role === "fa" ? store.fas : store.wardens;
-}
-
-function normalizeApproverRow(row, role) {
-    return {
-        id: normIdentityId(row && row.id),
-        name: normText(row && row.name),
-        password: normText(row && row.password),
-        role: normalizeApproverRole((row && row.role) || role),
-        active: row && row.active === false ? false : true,
-        hostelName: role === "warden" ? normalizeHostelName(row && row.hostelName) : ""
-    };
-}
-
-function listApproversByRole(store, role, options = {}, hostelMap = null) {
-    const normalizedRole = normalizeApproverRole(role);
-    if (!normalizedRole) return [];
-    const activeOnly = options.activeOnly !== false;
-    return getApproverRows(store, normalizedRole)
-        .map((row) => {
-            const normalized = normalizeApproverRow(row, normalizedRole);
-            if (normalizedRole !== "warden" || normalized.hostelName) return normalized;
-            return {
-                ...normalized,
-                hostelName: findWardenHostelById(store, normalized.id, hostelMap) || ""
-            };
-        })
-        .filter((row) => !activeOnly || row.active !== false);
-}
-
-function findApproverIndex(store, role, id) {
-    const normalizedRole = normalizeApproverRole(role);
-    if (!normalizedRole) return -1;
-    return getApproverRows(store, normalizedRole).findIndex((row) => normIdentityId(row && row.id) === normIdentityId(id));
-}
-
-function findApproverById(store, role, id, options = {}) {
-    const normalizedRole = normalizeApproverRole(role);
-    if (!normalizedRole) return null;
-    const activeOnly = options.activeOnly !== false;
-    return getApproverRows(store, normalizedRole)
-        .map((row) => normalizeApproverRow(row, normalizedRole))
-        .find((row) => row.id === normIdentityId(id) && (!activeOnly || row.active !== false)) || null;
-}
-
-function approverExistsEverywhere(store, id) {
-    const target = normIdentityId(id);
-    if (!target) return false;
-    return [...(store.wardens || []), ...(store.fas || [])].some((row) => normIdentityId(row && row.id) === target);
-}
-
-function findWardenHostelById(store, wardenId, hostelMap = null) {
-    const target = normIdentityId(wardenId);
-    const wardenRows = Array.isArray(store && store.wardens) ? store.wardens : [];
-
-    const storedHostel = wardenRows.find((row) => normIdentityId(row && row.id) === target);
-    if (storedHostel && normalizeHostelName(storedHostel.hostelName)) {
-        return normalizeHostelName(storedHostel.hostelName);
-    }
-
-    const map = hostelMap instanceof Map ? hostelMap : new Map();
-    for (const row of map.values()) {
-        if (normIdentityId(row.wardenId) === target) return row.hostelName;
-    }
-    return "";
-}
-
 async function loadApproverDirectoryPrimary() {
     const { data, error } = await readCredentialsStorePrimary();
     if (error) {
@@ -529,8 +739,8 @@ async function loadApproverDirectoryPrimary() {
         };
     }
 
-    const wardens = Array.isArray(data.wardens) ? data.wardens : [];
-    const fas = Array.isArray(data.fas) ? data.fas : [];
+    const wardens = getCredentialRows(data, "warden");
+    const fas = getCredentialRows(data, "fa");
 
     const byId = (rows) => {
         const map = new Map();
@@ -563,6 +773,22 @@ async function loadApproverDirectoryPrimary() {
         },
         error: null
     };
+}
+
+function findWardenHostelById(store, wardenId, hostelMap = null) {
+    const target = normalizeLoginKey(wardenId);
+    const wardenRows = getCredentialRows(store, "warden");
+
+    const storedHostel = wardenRows.find((row) => normalizeLoginKey(row.username) === target || normIdentityId(row.approverId) === normIdentityId(wardenId));
+    if (storedHostel && normalizeHostelName(storedHostel.hostelName)) {
+        return normalizeHostelName(storedHostel.hostelName);
+    }
+
+    const map = hostelMap instanceof Map ? hostelMap : new Map();
+    for (const row of map.values()) {
+        if (normIdentityId(row.wardenId) === normIdentityId(wardenId)) return row.hostelName;
+    }
+    return "";
 }
 
 function buildHostelWardenMap(raw) {
@@ -793,6 +1019,19 @@ function buildLeaveCompositeKey(row) {
     return `${normText(row && row.rollNumber).toUpperCase()}|${normText(row && row.startDate)}|${normText(row && row.endDate)}`;
 }
 
+function normalizeIsoDateKey(value) {
+    const raw = normText(value);
+    if (!raw) return "";
+    const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+    return match ? match[1] : "";
+}
+
+function rangesOverlapAllowingSameDayTouch(startA, endA, startB, endB) {
+    if (!startA || !endA || !startB || !endB) return false;
+    // Same-day boundary touch is allowed; only strict range intersection is blocked.
+    return startA < endB && endA > startB;
+}
+
 function findLeaveIndexByCompositeKey(rows, compositeKey) {
     if (!Array.isArray(rows) || !compositeKey) return -1;
     return rows.findIndex((row) => buildLeaveCompositeKey(row) === compositeKey);
@@ -928,137 +1167,161 @@ function ensureApproverIdentity(req, res, options = {}) {
     return requester;
 }
 
+function buildCredentialSession(user, credentials, hostelMap) {
+    const role = normalizeCredentialRole(user && user.role);
+    const username = normText(user && user.username);
+    const displayName = normText(user && (user.displayName || user.name || user.username));
+
+    if (role === "warden") {
+        return {
+            username,
+            role,
+            approverId: normIdentityId(user.approverId || user.id || username),
+            approverName: displayName,
+            displayName,
+            hostelName: normalizeHostelName(user.hostelName) || findWardenHostelById(credentials, username, hostelMap) || ""
+        };
+    }
+
+    if (role === "fa") {
+        return {
+            username,
+            role,
+            approverId: normIdentityId(user.approverId || user.id || username),
+            approverName: displayName,
+            displayName
+        };
+    }
+
+    if (role === "student") {
+        return {
+            username: normIdentityId(user.rollNumber || username),
+            role,
+            rollNumber: normIdentityId(user.rollNumber || username),
+            displayName
+        };
+    }
+
+    return {
+        username,
+        role,
+        displayName
+    };
+}
+
 app.post("/api/auth/login", async (req, res) => {
     const roleSelection = normText(req.body && (req.body.roleSelection || req.body.role || req.body.selectedRole)).toLowerCase();
     const usernameRaw = normText(req.body && (req.body.username || req.body.Username));
     const password = normText(req.body && (req.body.password || req.body.Password));
-    const uppercaseUsername = usernameRaw.toUpperCase();
-    const lowerUsername = usernameRaw.toLowerCase();
+    const normalizedUsername = normalizeLoginKey(usernameRaw);
+    const selectedRole = normalizeCredentialRole(roleSelection);
 
     if (!usernameRaw || !password) {
         return res.status(400).json({ error: "Username and password are required" });
     }
 
-    const staticAccounts = [
-        { username: "mess", password: "mess123", role: "mess", redirect: "/pages/mess/mess_dashboard.html" },
-        { username: "admin", password: "admin123", role: "admin", redirect: "/pages/admin/admin.html" }
-    ];
-    const staticMatch = staticAccounts.find((user) => user.username === lowerUsername && user.password === password);
-
     const { data: credentials } = await readCredentialsStorePrimary();
     const { map: hostelMap } = await loadHostelWardenMappingPrimary();
-    const wardenMatch = credentials.wardens.find((row) => row.active !== false && normIdentityId(row.id) === uppercaseUsername && normText(row.password) === password);
-    const faMatch = credentials.fas.find((row) => row.active !== false && normIdentityId(row.id) === uppercaseUsername && normText(row.password) === password);
-
-    const { map: studentMap } = await loadStudentMasterMapPrimary();
-    const student = studentMap.get(uppercaseUsername);
-
-    const wardenSession = (row) => ({
-        username: normIdentityId(row.id),
-        role: "warden",
-        approverId: normIdentityId(row.id),
-        approverName: normText(row.name),
-        displayName: normText(row.name),
-        hostelName: normalizeHostelName(row.hostelName) || findWardenHostelById(credentials, row.id, hostelMap) || ""
-    });
-
-    const faSession = (row) => ({
-        username: normIdentityId(row.id),
-        role: "fa",
-        approverId: normIdentityId(row.id),
-        approverName: normText(row.name),
-        displayName: normText(row.name)
-    });
-
-    const studentSession = () => ({
-        username: uppercaseUsername,
-        role: "student",
-        rollNumber: uppercaseUsername,
-        displayName: student.name
-    });
+    const matchingUsers = [];
+    for (const user of Array.isArray(credentials.users) ? credentials.users : []) {
+        if (user.active === false) continue;
+        if (normalizeLoginKey(user.username) !== normalizedUsername) continue;
+        if (await verifyCredentialPassword(password, user)) {
+            matchingUsers.push(user);
+        }
+    }
 
     if (roleSelection === "auto") {
-        if (staticMatch) {
-            return res.json({ success: true, redirect: staticMatch.redirect, session: { username: staticMatch.username, role: staticMatch.role, displayName: staticMatch.username } });
+        if (matchingUsers.length === 1) {
+            const session = buildCredentialSession(matchingUsers[0], credentials, hostelMap);
+            return res.json({ success: true, redirect: AUTH_REDIRECT_BY_ROLE[session.role] || "/index.html", session });
         }
 
-        if (wardenMatch && faMatch) {
-            return res.status(409).json({ error: "This ID has dual roles. Please select Warden or Faculty Advisor." });
-        }
-        if (wardenMatch) {
-            const session = wardenSession(wardenMatch);
-            return res.json({ success: true, redirect: "/pages/warden/warden_dashboard.html", session });
-        }
-        if (faMatch) {
-            const session = faSession(faMatch);
-            return res.json({ success: true, redirect: "/pages/fa/fa_dashboard.html", session });
-        }
-        if (student && password === "1234") {
-            return res.json({ success: true, redirect: "/pages/student/student.html", session: studentSession() });
+        if (matchingUsers.length > 1) {
+            const roles = matchingUsers.map((user) => normalizeCredentialRole(user.role)).filter(Boolean);
+            return res.status(409).json({ error: `This username has multiple roles. Please select one of: ${Array.from(new Set(roles)).join(", ")}` });
         }
 
         return res.status(401).json({ error: "Invalid credentials for selected role." });
     }
 
-    if ((roleSelection === "mess" || roleSelection === "admin") && staticMatch && staticMatch.role === roleSelection) {
-        return res.json({ success: true, redirect: staticMatch.redirect, session: { username: staticMatch.username, role: staticMatch.role, displayName: staticMatch.username } });
+    if (!selectedRole) {
+        return res.status(401).json({ error: "Invalid role selection" });
     }
 
-    if (roleSelection === "warden" && wardenMatch) {
-        const session = wardenSession(wardenMatch);
-        return res.json({ success: true, redirect: "/pages/warden/warden_dashboard.html", session });
-    }
-    if (roleSelection === "fa" && faMatch) {
-        const session = faSession(faMatch);
-        return res.json({ success: true, redirect: "/pages/fa/fa_dashboard.html", session });
-    }
-    if (roleSelection === "student" && student && password === "1234") {
-        return res.json({ success: true, redirect: "/pages/student/student.html", session: studentSession() });
+    const selectedUser = matchingUsers.find((user) => normalizeCredentialRole(user.role) === selectedRole);
+    if (!selectedUser) {
+        return res.status(401).json({ error: "Invalid credentials for selected role." });
     }
 
-    return res.status(401).json({ error: "Invalid credentials for selected role." });
+    const session = buildCredentialSession(selectedUser, credentials, hostelMap);
+    return res.json({ success: true, redirect: AUTH_REDIRECT_BY_ROLE[selectedRole] || "/index.html", session });
 });
 
 app.get("/api/approvers", async (req, res) => {
-    const requestedRole = normalizeApproverRole(req.query && req.query.role);
+    const requestedRole = normalizeCredentialRole(req.query && req.query.role);
     const { data, error } = await readCredentialsStorePrimary();
     if (error) return res.status(500).json({ error });
     const { map: hostelMap } = await loadHostelWardenMappingPrimary();
 
     if (requestedRole) {
-        return res.json(listApproversByRole(data, requestedRole, {}, hostelMap));
+        return res.json(listCredentialUsersByRole(data, requestedRole, {}, hostelMap));
     }
 
     res.json({
-        wardens: listApproversByRole(data, "warden", {}, hostelMap),
-        fas: listApproversByRole(data, "fa")
+        admins: listCredentialUsersByRole(data, "admin"),
+        mess: listCredentialUsersByRole(data, "mess"),
+        wardens: listCredentialUsersByRole(data, "warden", {}, hostelMap),
+        fas: listCredentialUsersByRole(data, "fa"),
+        students: listCredentialUsersByRole(data, "student")
     });
 });
 
 app.post("/api/approvers", async (req, res) => {
-    const role = normalizeApproverRole(req.body && req.body.role);
-    const id = normIdentityId(req.body && req.body.id);
-    const name = normText(req.body && req.body.name);
+    const role = normalizeCredentialRole(req.body && req.body.role);
+    const username = normText(req.body && (req.body.username || req.body.id || req.body.rollNumber));
+    const displayName = normText(req.body && (req.body.displayName || req.body.name));
     const password = normText(req.body && req.body.password);
     const hostelName = normalizeHostelName(req.body && req.body.hostelName);
+    const active = req.body && req.body.active === false ? false : true;
+    const rollNumber = normIdentityId(req.body && (req.body.rollNumber || req.body.username || req.body.id));
 
-    if (!role) return res.status(400).json({ error: "Role must be fa or warden" });
-    if (!id || !name || !password) {
-        return res.status(400).json({ error: "id, name, and password are required" });
+    if (!role) return res.status(400).json({ error: "Role must be admin, mess, fa, warden, or student" });
+    if (!username || !displayName || !password) {
+        return res.status(400).json({ error: "username/id, display name, and password are required" });
     }
 
     const { data, error } = await readCredentialsStorePrimary();
     if (error) return res.status(500).json({ error });
-    if (approverExistsEverywhere(data, id)) {
-        return res.status(409).json({ error: `Approver ${id} already exists` });
-    }
+    const existingIndex = findCredentialUserIndex(data, role, username);
 
     if (role === "warden" && !hostelName) {
         return res.status(400).json({ error: "A valid hostel is required for warden" });
     }
 
-    const record = { id, name, password, role, hostelName: role === "warden" ? hostelName : "" };
-    getApproverRows(data, role).push(record);
+    const record = {
+        username,
+        id: username,
+        name: displayName,
+        displayName,
+        password,
+        role,
+        active,
+        hostelName: role === "warden" ? hostelName : "",
+        rollNumber: role === "student" ? rollNumber : "",
+        approverId: role === "warden" || role === "fa" ? normIdentityId(req.body && (req.body.approverId || req.body.id || req.body.username)) : ""
+    };
+
+    if (existingIndex >= 0) {
+        data.users[existingIndex] = {
+            ...data.users[existingIndex],
+            ...record,
+            active: true,
+            updatedAt: new Date().toISOString()
+        };
+    } else {
+        data.users.push(record);
+    }
 
     if (role === "warden") {
         const { data: currentMap } = await readHostelWardenStore();
@@ -1073,14 +1336,14 @@ app.post("/api/approvers", async (req, res) => {
             });
         }
         for (const [key, value] of map.entries()) {
-            if (normIdentityId(value.wardenId) === id) {
+            if (normIdentityId(value.wardenId) === normIdentityId(username)) {
                 map.delete(key);
             }
         }
         map.set(normHostelKey(hostelName), {
             hostelName,
-            wardenId: id,
-            warden: name
+            wardenId: normIdentityId(username),
+            warden: displayName
         });
         const nextMapping = {};
         for (const [key, value] of map.entries()) {
@@ -1090,11 +1353,9 @@ app.post("/api/approvers", async (req, res) => {
     }
 
     try {
-        await writeCredentialsObjectStore({
-            wardens: Array.isArray(data.wardens) ? data.wardens : [],
-            fas: Array.isArray(data.fas) ? data.fas : []
-        });
-        res.json({ success: true, approver: normalizeApproverRow(record, role) });
+        await writeCredentialsObjectStore(data);
+        const saved = findCredentialUserByRole(data, role, username, { activeOnly: false });
+        res.json({ success: true, user: sanitizeCredentialRow(saved || record) });
     } catch (err) {
         console.error("Error writing credentials file:", err);
         res.status(500).json({ error: "Failed to save approver" });
@@ -1102,32 +1363,76 @@ app.post("/api/approvers", async (req, res) => {
 });
 
 app.delete("/api/approvers/:role/:id", async (req, res) => {
-    const role = normalizeApproverRole(req.params.role);
-    const id = normIdentityId(req.params.id);
+    const role = normalizeCredentialRole(req.params.role);
+    const username = normText(req.params.id);
 
-    if (!role) return res.status(400).json({ error: "Role must be fa or warden" });
-    if (!id) return res.status(400).json({ error: "Approver id is required" });
+    if (!role) return res.status(400).json({ error: "Role must be admin, mess, fa, warden, or student" });
+    if (!username) return res.status(400).json({ error: "User id is required" });
 
     const { data, error } = await readCredentialsStorePrimary();
     if (error) return res.status(500).json({ error });
 
-    const approverIndex = findApproverIndex(data, role, id);
-    if (approverIndex === -1) {
-        return res.status(404).json({ error: `${role.toUpperCase()} ${id} not found` });
+    const userIndex = findCredentialUserIndex(data, role, username);
+    if (userIndex === -1) {
+        return res.status(404).json({ error: `${role.toUpperCase()} ${username} not found` });
     }
 
-    const current = getApproverRows(data, role)[approverIndex];
+    const current = data.users[userIndex];
     current.active = false;
+    current.updatedAt = new Date().toISOString();
+
+    if (role === "warden") {
+        const { data: currentMap } = await readHostelWardenStore();
+        const map = new Map();
+        for (const [hostelNameKey, value] of Object.entries(currentMap || {})) {
+            const key = normHostelKey(hostelNameKey);
+            if (!key) continue;
+            if (normIdentityId(value && value.wardenId) === normIdentityId(username)) continue;
+            map.set(key, {
+                hostelName: normText((value && value.hostelName) || hostelNameKey),
+                wardenId: normIdentityId(value && value.wardenId),
+                warden: normText(value && value.warden)
+            });
+        }
+        const nextMapping = {};
+        for (const [key, value] of map.entries()) {
+            nextMapping[value.hostelName || key] = value;
+        }
+        await writeHostelWardenStore(nextMapping);
+    }
 
     try {
-        await writeCredentialsObjectStore({
-            wardens: Array.isArray(data.wardens) ? data.wardens : [],
-            fas: Array.isArray(data.fas) ? data.fas : []
-        });
+        await writeCredentialsObjectStore(data);
         res.json({ success: true });
     } catch (err) {
         console.error("Error updating credentials file:", err);
         res.status(500).json({ error: "Failed to delete approver" });
+    }
+});
+
+app.post("/api/approvers/:role/:id/password", async (req, res) => {
+    const role = normalizeCredentialRole(req.params.role);
+    const username = normText(req.params.id);
+    const newPassword = normText(req.body && (req.body.password || req.body.newPassword));
+
+    if (!role) return res.status(400).json({ error: "Role must be admin, mess, fa, warden, or student" });
+    if (!username) return res.status(400).json({ error: "User id is required" });
+    if (!newPassword) return res.status(400).json({ error: "New password is required" });
+
+    const { data, error } = await readCredentialsStorePrimary();
+    if (error) return res.status(500).json({ error });
+
+    const updatedUser = await updateCredentialUserPassword(data, role, username, newPassword);
+    if (!updatedUser) {
+        return res.status(404).json({ error: `${role.toUpperCase()} ${username} not found` });
+    }
+
+    try {
+        await writeCredentialsObjectStore(data);
+        res.json({ success: true, user: sanitizeCredentialRow(updatedUser) });
+    } catch (err) {
+        console.error("Error updating credential password:", err);
+        res.status(500).json({ error: "Failed to update password" });
     }
 });
 
@@ -1883,6 +2188,21 @@ app.post("/api/submit-leave", async (req, res) => {
 
         if (compositeExists(studentLeaves) || compositeExists(wardenLeaves)) {
             return res.status(409).json({ error: "Leave request already exists for this roll number and date range" });
+        }
+
+        const newStartDate = normalizeIsoDateKey(startDate);
+        const newEndDate = normalizeIsoDateKey(endDate);
+        const overlapsExistingLeave = studentLeaves.some((row) => {
+            if (normText(row.rollNumber).toUpperCase() !== student.rollNumber) return false;
+            if (!OVERLAP_BLOCKING_LEAVE_STATUSES.has(normText(row.status).toLowerCase())) return false;
+
+            const existingStartDate = normalizeIsoDateKey(row.startDate);
+            const existingEndDate = normalizeIsoDateKey(row.endDate);
+            return rangesOverlapAllowingSameDayTouch(existingStartDate, existingEndDate, newStartDate, newEndDate);
+        });
+
+        if (overlapsExistingLeave) {
+            return res.status(409).json({ error: "Leave already exists for this date" });
         }
 
         const leaveRecord = {

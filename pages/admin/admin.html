@@ -261,14 +261,28 @@
                     </form>
                 </div>
 
-                <!-- Approvers View -->
+                <!-- Users View -->
                 <div id="approversView" style="display:none;">
                     <div class="section-header">
-                        <h3>Manage Approvers</h3>
-                        <button class="btn-add" id="btnAddApprover"><i class="fa-solid fa-plus"></i> Add Approver</button>
+                        <h3>Manage Users</h3>
+                        <button class="btn-add" id="btnAddApprover"><i class="fa-solid fa-plus"></i> Add User</button>
                     </div>
 
                     <div class="cards" style="margin-bottom:20px;">
+                        <div class="card">
+                            <div class="card-icon"><i class="fa-solid fa-user-gear"></i></div>
+                            <div>
+                                <p class="card-label">Admins</p>
+                                <h2 id="statAdmins">0</h2>
+                            </div>
+                        </div>
+                        <div class="card">
+                            <div class="card-icon"><i class="fa-solid fa-utensils"></i></div>
+                            <div>
+                                <p class="card-label">Mess</p>
+                                <h2 id="statMess">0</h2>
+                            </div>
+                        </div>
                         <div class="card">
                             <div class="card-icon"><i class="fa-solid fa-user-shield"></i></div>
                             <div>
@@ -284,18 +298,21 @@
                             </div>
                         </div>
                         <div class="card">
-                            <div class="card-icon"><i class="fa-solid fa-id-card"></i></div>
+                            <div class="card-icon"><i class="fa-solid fa-graduation-cap"></i></div>
                             <div>
-                                <p class="card-label">Active Type</p>
-                                <h2 id="statApproverType">Wardens</h2>
+                                <p class="card-label">Students</p>
+                                <h2 id="statStudents">0</h2>
                             </div>
                         </div>
                     </div>
 
                     <div class="section-header" style="margin-bottom:14px; flex-wrap:wrap; gap:12px;">
                         <div class="approver-tabs">
+                            <button type="button" class="btn-back approver-tab" id="btnAdminApprovers">Admins</button>
+                            <button type="button" class="btn-back approver-tab" id="btnMessApprovers">Mess</button>
                             <button type="button" class="btn-back approver-tab active" id="btnWardenApprovers">Wardens</button>
                             <button type="button" class="btn-back approver-tab" id="btnFaApprovers">Faculty Advisors</button>
+                            <button type="button" class="btn-back approver-tab" id="btnStudentApprovers">Students</button>
                         </div>
                         <div class="search-box" style="max-width:420px; width:100%;">
                             <i class="fa-solid fa-magnifying-glass"></i>
@@ -311,6 +328,7 @@
                                     <th>ID</th>
                                     <th>Name</th>
                                     <th>Hostel</th>
+                                    <th>Status</th>
                                     <th>Actions</th>
                                 </tr>
                             </thead>
@@ -324,27 +342,30 @@
                 <!-- Approver Form -->
                 <div id="approverFormView" style="display:none;">
                     <div class="section-header">
-                        <h3 id="approverFormTitle">Add Approver</h3>
+                        <h3 id="approverFormTitle">Add User</h3>
                         <button class="btn-back" id="btnApproverBack"><i class="fa-solid fa-arrow-left"></i> Back</button>
                     </div>
 
                     <form id="approverForm" novalidate>
                         <fieldset>
-                            <legend><i class="fa-solid fa-user-gear"></i> Approver Information</legend>
+                            <legend><i class="fa-solid fa-user-gear"></i> User Information</legend>
                             <div class="form-grid">
                                 <div class="form-group">
                                     <label for="aRole">Role *</label>
                                     <select id="aRole" name="role" required>
+                                        <option value="admin">Admin</option>
+                                        <option value="mess">Mess</option>
                                         <option value="warden">Warden</option>
                                         <option value="fa">Faculty Advisor</option>
+                                        <option value="student">Student</option>
                                     </select>
                                 </div>
                                 <div class="form-group">
-                                    <label for="aId">ID *</label>
-                                    <input type="text" id="aId" name="id" placeholder="e.g. JT101" required>
+                                    <label for="aId">Username / ID *</label>
+                                    <input type="text" id="aId" name="id" placeholder="e.g. admin, JT101, CS25B1001" required>
                                 </div>
                                 <div class="form-group">
-                                    <label for="aName">Name *</label>
+                                    <label for="aName">Display Name *</label>
                                     <input type="text" id="aName" name="name" placeholder="Full name" required>
                                 </div>
                                 <div class="form-group" id="aHostelGroup">
