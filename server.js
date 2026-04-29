@@ -718,6 +718,47 @@ async function upgradeCredentialsIfNeeded(store, user, rawPassword) {
     await writeCredentialsObjectStore(store);
 }
 
+async function ensureStudentCredentialExists(student) {
+    const rollNumber = normIdentityId(student && student.rollNumber);
+    if (!rollNumber) {
+        return { created: false, user: null, error: "Invalid student roll number" };
+    }
+
+    const { data, error } = await readCredentialsStorePrimary();
+    if (error) {
+        return { created: false, user: null, error };
+    }
+
+    const existingIndex = findCredentialUserIndex(data, "student", rollNumber);
+    if (existingIndex >= 0) {
+        const existing = data.users[existingIndex];
+        if (existing.active === false) {
+            existing.active = true;
+            existing.updatedAt = new Date().toISOString();
+            await writeCredentialsObjectStore(data);
+        }
+        return { created: false, user: existing, error: null };
+    }
+
+    const studentName = normText(student && (student.name || student.displayName)) || rollNumber;
+    data.users.push({
+        username: rollNumber,
+        id: rollNumber,
+        name: studentName,
+        displayName: studentName,
+        role: "student",
+        active: true,
+        password: DEFAULT_STUDENT_PASSWORD,
+        rollNumber,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+    });
+
+    await writeCredentialsObjectStore(data);
+    const saved = findCredentialUserByRole(data, "student", rollNumber, { activeOnly: false });
+    return { created: true, user: saved, error: null };
+}
+
 async function loadStudentMasterMapPrimary() {
     const { data, error } = await readStudentMasterStore();
     if (error) return { map: new Map(), error };
@@ -1281,14 +1322,14 @@ app.post("/api/approvers", async (req, res) => {
     const role = normalizeCredentialRole(req.body && req.body.role);
     const username = normText(req.body && (req.body.username || req.body.id || req.body.rollNumber));
     const displayName = normText(req.body && (req.body.displayName || req.body.name));
-    const password = normText(req.body && req.body.password);
+    const providedPassword = normText(req.body && req.body.password);
     const hostelName = normalizeHostelName(req.body && req.body.hostelName);
     const active = req.body && req.body.active === false ? false : true;
     const rollNumber = normIdentityId(req.body && (req.body.rollNumber || req.body.username || req.body.id));
 
     if (!role) return res.status(400).json({ error: "Role must be admin, mess, fa, warden, or student" });
-    if (!username || !displayName || !password) {
-        return res.status(400).json({ error: "username/id, display name, and password are required" });
+    if (!username || !displayName) {
+        return res.status(400).json({ error: "username/id and display name are required" });
     }
 
     const { data, error } = await readCredentialsStorePrimary();
@@ -1304,7 +1345,6 @@ app.post("/api/approvers", async (req, res) => {
         id: username,
         name: displayName,
         displayName,
-        password,
         role,
         active,
         hostelName: role === "warden" ? hostelName : "",
@@ -1319,8 +1359,18 @@ app.post("/api/approvers", async (req, res) => {
             active: true,
             updatedAt: new Date().toISOString()
         };
+        if (providedPassword) {
+            data.users[existingIndex].password = providedPassword;
+            data.users[existingIndex].passwordHash = "";
+        }
     } else {
-        data.users.push(record);
+        data.users.push({
+            ...record,
+            // New admin-created members always start with the default password.
+            password: DEFAULT_STUDENT_PASSWORD,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+        });
     }
 
     if (role === "warden") {
@@ -2010,6 +2060,10 @@ app.post("/api/student-master", async (req, res) => {
 
     try {
         await writeStudentMasterStore(data);
+        const credentialResult = await ensureStudentCredentialExists(record);
+        if (credentialResult.error) {
+            return res.status(500).json({ error: `Student added but failed to create login credential: ${credentialResult.error}` });
+        }
         res.json({ success: true, student: record });
     } catch (err) {
         console.error("Error adding master record:", err);
